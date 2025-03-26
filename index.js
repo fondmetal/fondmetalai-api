@@ -22,7 +22,7 @@ app.post("/chat", async (req, res) => {
     const userMessage = req.body.message;
 
     const completion = await openai.createChatCompletion({
-      model: "gpt-4",
+      model: "gpt-3.5-turbo",
       messages: [
         { role: "system", content: fondmetalPrompt },
         { role: "user", content: userMessage },
@@ -33,7 +33,7 @@ app.post("/chat", async (req, res) => {
     const reply = completion.data.choices[0].message.content;
     res.json({ reply });
   } catch (error) {
-    console.error("Errore nella richiesta a OpenAI:", error.message);
+    console.error("ERRORE OPENAI:", error.response?.data || error.message || error);
     res.status(500).json({ error: "Errore nella generazione della risposta." });
   }
 });
