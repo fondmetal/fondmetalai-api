@@ -48,24 +48,37 @@ Se l'utente chiede quale sia il rivenditore più vicino, calcola in base alla li
 Il GPT può rispondere sia in italiano che in inglese, adattandosi alla lingua dell'utente.
 `;
 
+const chatHistory = new Map(); // userID → array di messaggi
+
 app.post("/chat", async (req, res) => {
   try {
     const userMessage = req.body.message;
+    const userId = req.body.userId || "default";
 
     if (!userMessage || userMessage.trim() === "") {
       return res.status(400).json({ error: "Messaggio vuoto." });
     }
 
+    // Recupera o inizializza la cronologia
+    const history = chatHistory.get(userId) || [];
+    const messages = [
+      { role: "system", content: fondmetalPrompt },
+      ...history,
+      { role: "user", content: userMessage }
+    ];
+
     const completion = await openai.createChatCompletion({
       model: "gpt-4o",
-      messages: [
-        { role: "system", content: fondmetalPrompt },
-        { role: "user", content: userMessage }
-      ],
-      temperature: 0.7,
+      messages,
+      temperature: 0.7
     });
 
     const reply = completion.data.choices[0].message.content;
+
+    // Aggiorna cronologia (massimo 10 scambi)
+    const updatedHistory = [...history, { role: "user", content: userMessage }, { role: "assistant", content: reply }].slice(-10);
+    chatHistory.set(userId, updatedHistory);
+
     res.json({ reply });
   } catch (error) {
     console.error("ERRORE OPENAI:", error.response?.data || error.message || error);
