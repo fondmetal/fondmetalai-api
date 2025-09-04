@@ -99,7 +99,7 @@ app.get("/health-db", async (_req, res) => {
     const [ver] = await pool.query("SELECT VERSION() AS version");
     res.json({ ok: !!one?.[0]?.ok, version: ver?.[0]?.version || null });
   } catch (err) {
-    console.error("[DB] Health error:", err.message);
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[DB] Health error:", err); // <— log completo
+    res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 });
