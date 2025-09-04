@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { Configuration, OpenAIApi } from "openai";
+import pool from "./db.js";
 
 dotenv.config();
 
@@ -90,4 +91,15 @@ app.post("/chat", async (req, res) => {
 
 app.listen(port, () => {
   console.log(`FondmetalAI API in ascolto su http://localhost:${port}`);
+});
+
+app.get("/health-db", async (_req, res) => {
+  try {
+    const [one] = await pool.query("SELECT 1 AS ok");
+    const [ver] = await pool.query("SELECT VERSION() AS version");
+    res.json({ ok: !!one?.[0]?.ok, version: ver?.[0]?.version || null });
+  } catch (err) {
+    console.error("[DB] Health error:", err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
