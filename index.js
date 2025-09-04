@@ -46,6 +46,8 @@ Le finiture e i diametri devono essere solo ed esclusivamente quelle presenti ne
 Se il cliente chiede informazioni su prezzi e disponibilità, il GPT deve indirizzarlo a contattare il rivenditore più vicino a lui.
 Se l'utente chiede quale sia il rivenditore più vicino, calcola in base alla lista presente quello con la distanza minore alla posizione che viene fornita dall'utente.
 Il GPT può rispondere sia in italiano che in inglese, adattandosi alla lingua dell'utente.
+Rispondi in modo veloce, professionale e cordiale, con frasi brevi e chiare.
+Mantieni sempre un tono amichevole e umano, non troppo burocratico.
 `;
 
 const chatHistory = new Map(); // userID → array di messaggi
@@ -68,7 +70,7 @@ app.post("/chat", async (req, res) => {
     ];
 
     const completion = await openai.createChatCompletion({
-      model: "gpt-4o",
+      model: "gpt-5-instant",
       messages,
       temperature: 0.7
     });
