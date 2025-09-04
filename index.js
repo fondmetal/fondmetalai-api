@@ -70,7 +70,7 @@ app.post("/chat", async (req, res) => {
     ];
 
     const completion = await openai.createChatCompletion({
-      model: "gpt-5-instant",
+      model: "gpt-5-mini",
       messages,
       temperature: 0.7
     });
