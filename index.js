@@ -265,7 +265,7 @@ async function getFitmentData(carVersionId, wheelAmId) {
   return rows.length ? rows[0] : null;
 }
 
-// Info di base su un modello di cerchio: diametri + finiture
+// 7) Info di base su un modello di cerchio: diametri + finiture
 async function getWheelBasicInfo(wheelName) {
   // [Non verificato] Adatta i nomi delle colonne se nel tuo DB sono diversi
   const [rows] = await pool.query(
@@ -285,6 +285,29 @@ async function getWheelBasicInfo(wheelName) {
   return rows.length ? rows[0] : null;
 }
 
+// 8) Tutti i modelli ruota che risultano applicati ad un modello di auto
+async function getWheelModelsForCarModel(modelId) {
+  // [Non verificato] usa applications + car_versions + am_wheels + am_wheel_models
+  const [rows] = await pool.query(
+    `SELECT 
+       m.id   AS model_id,
+       m.model AS model_name,
+       MAX(w.diameter) AS max_diameter,
+       MAX(w.updated_at) AS last_update
+     FROM car_versions cv
+     JOIN applications a ON a.car = cv.id
+     JOIN am_wheels w    ON a.am_wheel = w.id
+     JOIN am_wheel_models m ON w.model = m.id
+     WHERE cv.car = ?
+       AND w.status = 'ACTIVE'
+     GROUP BY m.id, m.model
+     ORDER BY last_update DESC, max_diameter DESC
+     LIMIT 12`,
+    [modelId]
+  );
+  return rows;
+}
+
 // ===================================================
 // CHATBOT /chat
 // ===================================================
@@ -297,8 +320,27 @@ app.post("/chat", async (req, res) => {
       return res.status(400).json({ error: "Messaggio vuoto." });
     }
 
+    // Recupero cronologia PRIMA dell'analisi, così posso usarla per i follow-up (es. "2022")
+    const history = chatHistory.get(userId) || [];
+
+    // Costruisco un messaggio di analisi che tiene conto dei follow-up brevi
+    let messageForAnalysis = userMessage;
+    const trimmed = userMessage.trim();
+
+    // Se il messaggio è tipo "2022", "si", "no" (poche cifre, niente lettere),
+    // lo attacco all'ultima domanda utente precedente.
+    if (trimmed.length < 6 && !/[a-zA-Z]/.test(trimmed)) {
+      const lastUser = [...history].reverse().find(m => m.role === "user");
+      if (lastUser) {
+        messageForAnalysis =
+          lastUser.content +
+          "\n\nRisposta aggiuntiva dell'utente (follow-up): " +
+          userMessage;
+      }
+    }
+
     // Analisi richiesta (intent + parametri)
-    let analysis = await analyzeUserRequest(userMessage);
+    let analysis = await analyzeUserRequest(messageForAnalysis);
     if (!analysis) {
       analysis = { intent: "other" };
     }
@@ -308,6 +350,7 @@ app.post("/chat", async (req, res) => {
     let homologations = [];
     let fitmentSummary = null;
     let wheelInfoSummary = null;
+    let carWheelOptions = null;
     let needMoreCarData = false;
 
     // === Caso: info su modello di ruota (wheel_info) ===
@@ -320,40 +363,52 @@ app.post("/chat", async (req, res) => {
       }
     }
 
-    // === Caso: fitment / consigli / omologazione basati sull'auto ===
+    // === Intent che si basano sull'auto ===
     const isCarFitmentIntent =
       analysis.intent === "fitment_by_car" ||
       analysis.intent === "recommendation_by_car" ||
       analysis.intent === "omologation_by_car";
 
     if (isCarFitmentIntent) {
-      // Se mancano dati base dell'auto → chiedi all'utente
+      // Se manca qualcosa dell'auto → segnalalo al modello
       if (!analysis.brand || !analysis.model || (!analysis.year && !analysis.version)) {
         needMoreCarData = true;
       }
 
-      // Se invece abbiamo TUTTO (brand, model, version, wheel, diameter) proviamo il fitment DB
+      // Se abbiamo almeno marca + modello, calcoliamo i modelli di cerchio dal DB
+      let manufacturerId = null;
+      let modelId = null;
+
+      if (analysis.brand && analysis.model) {
+        try {
+          manufacturerId = await findManufacturerId(analysis.brand);
+          if (manufacturerId) {
+            modelId = await findModelId(manufacturerId, analysis.model);
+          }
+          if (modelId) {
+            carWheelOptions = await getWheelModelsForCarModel(modelId);
+          }
+        } catch (err) {
+          console.warn("Errore getWheelModelsForCarModel:", err.message || err);
+        }
+      }
+
+      // Se in più abbiamo anche versione + cerchio + diametro → fitment preciso
       if (
         analysis.brand &&
         analysis.model &&
-        analysis.version && // per ora ci basiamo sulla versione testuale
+        analysis.version &&
         analysis.wheel &&
-        analysis.diameter
+        analysis.diameter &&
+        modelId
       ) {
         try {
-          const manufacturerId = await findManufacturerId(analysis.brand);
-          if (!manufacturerId) throw new Error("Manufacturer non trovato");
-
-          const modelId = await findModelId(manufacturerId, analysis.model);
-          if (!modelId) throw new Error("Modello non trovato");
-
           const carVersionId = await findCarVersionIdByLabel(modelId, analysis.version);
           if (!carVersionId) throw new Error("Versione auto non trovata");
 
           const wheelModelId = await findWheelModelId(analysis.wheel);
           if (!wheelModelId) throw new Error("Modello cerchio non trovato");
 
-          // estraggo numero dal diametro (es. "20 pollici" -> 20)
           const diaMatch = String(analysis.diameter).match(/(\d{2})/);
           const diameterNum = diaMatch ? parseInt(diaMatch[1], 10) : null;
           if (!diameterNum) throw new Error("Diametro non valido");
@@ -361,7 +416,6 @@ app.post("/chat", async (req, res) => {
           const wheelVersion = await findWheelVersionId(wheelModelId, diameterNum);
           if (!wheelVersion) throw new Error("Versione cerchio non trovata");
 
-          // Cerco la combinazione in applications
           fitmentRow = await getFitmentData(carVersionId, wheelVersion.am_wheel);
 
           if (fitmentRow) {
@@ -388,12 +442,7 @@ app.post("/chat", async (req, res) => {
       }
     }
 
-    // 4) Recupero cronologia utente
-    const history = chatHistory.get(userId) || [];
-
-    const messages = [
-      { role: "system", content: fondmetalPrompt }
-    ];
+    const messages = [{ role: "system", content: fondmetalPrompt }];
 
     // Dati tecnici ruota (wheel_info)
     if (wheelInfoSummary) {
@@ -409,7 +458,28 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // Dati tecnici fitment (auto + cerchio)
+    // Dati tecnici: lista modelli ruota per l'auto (anche senza cerchio specifico)
+    if (carWheelOptions && carWheelOptions.length) {
+      const list = carWheelOptions
+        .map(
+          r =>
+            `- ${r.model_name} (diametro massimo a catalogo: ${r.max_diameter || "n/d"})`
+        )
+        .join("\n");
+
+      messages.push({
+        role: "system",
+        content:
+          "Dal database interno risultano i seguenti modelli di cerchi Fondmetal associati a questa famiglia di vetture:\n" +
+          list +
+          "\n\nQuando l'utente ti chiede che cerchi consigli/gli montano sulla sua auto, " +
+          "puoi usare questi modelli come base per i tuoi suggerimenti. " +
+          "Spiega sempre che si tratta di modelli compatibili secondo i nostri dati tecnici, " +
+          "ma che per la conferma finale di misure e omologazioni è comunque necessario verificare il singolo allestimento."
+      });
+    }
+
+    // Dati tecnici fitment (auto + cerchio specifico)
     if (fitmentSummary && analysis) {
       const omologazioniText = homologations.length
         ? homologations.map(h => `${h.type}${h.code ? ` (${h.code})` : ""}`).join(", ")
@@ -434,7 +504,7 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // Se mancano dati sull'auto e l'intento è legato al fitment dell'auto → fai domande, non risposte generiche
+    // Se mancano dati sull'auto e l'intent è legato al fitment dell'auto → fai domande mirate
     if (isCarFitmentIntent && needMoreCarData) {
       messages.push({
         role: "system",
@@ -452,7 +522,6 @@ app.post("/chat", async (req, res) => {
     // Aggiungo cronologia e messaggio utente
     messages.push(...history, { role: "user", content: userMessage });
 
-    // Chiamata finale a GPT per la risposta all'utente
     const completion = await openai.createChatCompletion({
       model: "gpt-4o",
       messages,
@@ -472,7 +541,8 @@ app.post("/chat", async (req, res) => {
     res.json({
       reply,
       fitmentUsed: !!fitmentSummary,
-      wheelInfoUsed: !!wheelInfoSummary
+      wheelInfoUsed: !!wheelInfoSummary,
+      carWheelOptionsUsed: !!(carWheelOptions && carWheelOptions.length)
     });
   } catch (error) {
     console.error("ERRORE /chat:", error.response?.data || error.message || error);
@@ -495,7 +565,7 @@ app.get("/health-db", async (_req, res) => {
     const [ver] = await pool.query("SELECT VERSION() AS version");
     res.json({ ok: !!one?.[0]?.ok, version: ver?.[0]?.version || null });
   } catch (err) {
-    console.error("[DB] Health error:", err); // <— log completo
+    console.error("[DB] Health error:", err);
     res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 });
@@ -505,25 +575,25 @@ app.get("/tcp-check", async (req, res) => {
   const dbPort = 3306;
   const startTime = new Date().toISOString();
 
-  // Funzione per recuperare IP pubblico della macchina (Render)
-  const getPublicIP = () => {
-    return new Promise((resolve) => {
-      https.get("https://api.ipify.org?format=json", (resp) => {
-        let data = "";
-        resp.on("data", chunk => data += chunk);
-        resp.on("end", () => {
-          try {
-            const json = JSON.parse(data);
-            resolve(json.ip);
-          } catch (e) {
-            resolve("Non disponibile");
-          }
+  const getPublicIP = () =>
+    new Promise((resolve) => {
+      https
+        .get("https://api.ipify.org?format=json", (resp) => {
+          let data = "";
+          resp.on("data", (chunk) => (data += chunk));
+          resp.on("end", () => {
+            try {
+              const json = JSON.parse(data);
+              resolve(json.ip);
+            } catch (e) {
+              resolve("Non disponibile");
+            }
+          });
+        })
+        .on("error", (err) => {
+          resolve("Errore nel recupero IP: " + err.message);
         });
-      }).on("error", (err) => {
-        resolve("Errore nel recupero IP: " + err.message);
-      });
     });
-  };
 
   const publicIP = await getPublicIP();
 
