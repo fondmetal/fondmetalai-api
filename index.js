@@ -209,11 +209,26 @@ app.post("/chat", async (req, res) => {
     let fitmentRow = null;
     let homologations = [];
     let fitmentSummary = null;
+    let askForYear = false; // <-- nuovo flag
 
     try {
       extracted = await extractFitmentParameters(userMessage);
       console.log("Parametri estratti:", extracted);
 
+      // Se abbiamo già un contesto "auto + cerchio", ma manca la versione,
+      // non proviamo il fitment e chiediamo all'utente più info (anno/serie)
+      if (
+        extracted &&
+        extracted.brand &&
+        extracted.model &&
+        extracted.wheel &&
+        extracted.diameter &&
+        !extracted.version // versione assente → chiedi info all'utente
+      ) {
+        askForYear = true;
+      }
+
+      // Se invece abbiamo TUTTO (compresa la versione) allora proviamo il fitment
       if (
         extracted &&
         extracted.brand &&
@@ -222,7 +237,6 @@ app.post("/chat", async (req, res) => {
         extracted.wheel &&
         extracted.diameter
       ) {
-        // 2) Risolvo gli ID nel DB passo-passo
         const manufacturerId = await findManufacturerId(extracted.brand);
         if (!manufacturerId) throw new Error("Manufacturer non trovato");
 
@@ -247,7 +261,6 @@ app.post("/chat", async (req, res) => {
         fitmentRow = await getFitmentData(carVersionId, wheelVersion.am_wheel);
 
         if (fitmentRow) {
-          // preparo omologazioni in formato pulito
           if (fitmentRow.homologation_tuv) homologations.push({ type: "TUV", code: fitmentRow.homologation_tuv });
           if (fitmentRow.homologation_kba) homologations.push({ type: "KBA", code: fitmentRow.homologation_kba });
           if (fitmentRow.homologation_ece) homologations.push({ type: "ECE", code: fitmentRow.homologation_ece });
@@ -302,6 +315,22 @@ app.post("/chat", async (req, res) => {
       });
     }
 
+    // Se manca anno/versione ma abbiamo già auto + cerchio → GUIDA l'utente
+    if (askForYear && !fitmentSummary) {
+      messages.push({
+        role: "system",
+        content:
+          "Per la richiesta attuale l'utente ti ha dato marca, modello e cerchio, " +
+          "ma NON ti ha indicato anno o versione della vettura. " +
+          "Prima di dare una risposta tecnica o parlare di omologazioni, fai una domanda di chiarimento: " +
+          "chiedi in modo chiaro e amichevole l'anno di immatricolazione (o il periodo, es. 'dal 2018 in poi') " +
+          "e, se necessario, la motorizzazione o la serie. " +
+          "Spiega brevemente che le misure e le omologazioni possono cambiare da una versione all'altra. " +
+          "Non inventare mai questi dati: chiedili sempre all'utente. " +
+          "In questa risposta concentrati su UNA sola domanda di chiarimento, non dare ancora un verdetto definitivo."
+      });
+    }
+
     // aggiungo cronologia e messaggio utente
     messages.push(...history, { role: "user", content: userMessage });
 
@@ -322,12 +351,9 @@ app.post("/chat", async (req, res) => {
     ].slice(-10);
     chatHistory.set(userId, updatedHistory);
 
-    // Per compatibilità col front-end restituisco reply, ma tengo anche info debug opzionale
     res.json({
       reply,
       fitmentUsed: !!fitmentSummary
-      // volendo puoi aggiungere fitmentSummary qui per debug
-      // fitmentSummary
     });
   } catch (error) {
     console.error("ERRORE /chat:", error.response?.data || error.message || error);
