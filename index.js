@@ -45,23 +45,22 @@ COMPORTAMENTO PER I CASI D'USO PRINCIPALI
      - Marca
      - Modello
      - Anno (e se necessario generazione/serie)
-     - Eventualmente motorizzazione/uso particolare (es. freni maggiorati, assetto).
    - Se hai dati tecnici strutturati per quell'auto:
      - Spiega quali cerchi risultano compatibili e in che configurazione (es. diametri, canali, ET, eventuali limitazioni).
    - Se NON hai dati strutturati sufficienti:
-     - Spiega che per essere precisi servono i dati del nostro configuratore 3D.
      - Invita l'utente a usare il configuratore 3D sul nostro sito, spiegando brevemente cosa gli permetterà di vedere.
 
 2) L'utente vuole sapere quali cerchi gli consigli per la sua auto.
    - Prima raccogli gli stessi dati del punto 1 (marca, modello, anno, uso dell'auto).
    - Se hai dati tecnici strutturati, usa quelli per proporre cerchi effettivamente compatibili.
+   - Consiglia i modelli più recenti prima.
    - Quando fai una proposta, spiega in modo sintetico:
-     - perché quel modello di cerchio è adatto (stile, uso, dimensioni, gamma),
+     - perché quel modello di cerchio è adatto (stile, uso, dimensioni),
      - in che diametri/finiture è disponibile (solo se queste informazioni sono presenti nei dati o chiaramente sul sito).
    - Non consigliare mai cerchi non presenti nel catalogo Fondmetal.
 
 3) L'utente vuole sapere quali cerchi sono omologati per la sua auto.
-   - Raccogli sempre prima i dati di identificazione della vettura (marca, modello, anno, eventualmente versione).
+   - Raccogli sempre prima i dati di identificazione della vettura (marca, modello, anno).
    - Se nei dati tecnici strutturati ci sono informazioni di omologazione (ECE, TUV, KBA, JWL, ITA):
      - Elenca chiaramente i tipi di omologazione disponibili e spiega in quali mercati o condizioni sono valide, se questa informazione è esplicita.
    - Se NON hai dati strutturati sulla omologazione per quella combinazione:
@@ -92,8 +91,8 @@ COMPORTAMENTO PER I CASI D'USO PRINCIPALI
    - Se la domanda riguarda uno specifico modello di cerchio e hai dati strutturati, utilizza quei dati per dare una risposta precisa.
 
 GESTIONE DEL DIALOGO
-- Quando mancano informazioni importanti per dare una risposta precisa, NON saltare subito al configuratore:
-  - fai 1–2 domande mirate per completare il quadro;
+- Quando mancano informazioni importanti per dare una risposta precisa, NON andare subito al configuratore:
+  - fai 1 o 2 domande mirate per completare il quadro;
   - solo dopo, se ancora non è possibile essere specifici, suggerisci il configuratore o il contatto diretto.
 - Non fare mai domande inutili: concentrati su quelli che servono davvero (marca, modello, anno, uso, cerchio, dimensioni).
 - Ogni volta che cambi argomento (es. da compatibilità a consigli estetici), chiarisci cosa stai facendo.
@@ -114,9 +113,9 @@ LINGUA
 const chatHistory = new Map(); // userID → array di messaggi
 
 // =========================
-// ESTRAZIONE PARAMETRI DA TESTO (GPT)
+// ANALISI RICHIESTA (INTENT + PARAMETRI)
 // =========================
-async function extractFitmentParameters(message) {
+async function analyzeUserRequest(message) {
   try {
     const completion = await openai.createChatCompletion({
       model: "gpt-4o",
@@ -124,30 +123,36 @@ async function extractFitmentParameters(message) {
       messages: [
         {
           role: "system",
-          content: `Estrai dal testo solo questi valori, se presenti:
-          - marca auto
-          - modello auto
-          - versione
-          - cerchio richiesto
-          - diametro
+          content: `
+Analizza la richiesta dell'utente e restituisci:
+- che tipo di richiesta è (intent)
+- eventuali dati estratti (marca, modello, anno, versione, cerchio, diametro).
 
-          Devi restituire SOLO un oggetto JSON valido.
-          IMPORTANTISSIMO:
-          - NIENTE testo prima o dopo
-          - NIENTE spiegazioni
-          - NIENTE blocchi di codice
-          - NIENTE backtick (niente \`\`\`)
-          
-          Formato esatto:
-          {
-            "brand": "...",
-            "model": "...",
-            "version": "...",
-            "wheel": "...",
-            "diameter": "..."
-          }
+Gli intent possibili sono SOLO questi:
+- "fitment_by_car"        → "quali cerchi montano sulla mia auto", "che cerchi posso montare su..."
+- "recommendation_by_car" → "che cerchi mi consigli per la mia auto"
+- "omologation_by_car"    → "quali cerchi sono omologati per la mia auto"
+- "fitment_by_wheel"      → "su quali auto posso montare questi cerchi"
+- "wheel_info"            → info generali su un modello di cerchio (finiture, diametri, ecc.)
+- "general_info"          → domande teoriche (cos'è ET, differenza tra canale, ecc.)
+- "other"                 → tutto il resto.
 
-          Se un valore non è presente, usa null.`
+Formato di risposta (SOLO JSON, niente testo extra, niente backtick):
+
+{
+  "intent": "...",
+  "brand": "...",
+  "model": "...",
+  "year": 2019,
+  "version": "...",
+  "wheel": "...",
+  "diameter": "...",
+  "extra": null
+}
+
+Se un valore non è presente, mettilo a null.
+Se non hai idea dell'intent, usa "other".
+Se l'anno è presente, deve essere un numero (es. 2019).`
         },
         { role: "user", content: message }
       ]
@@ -155,17 +160,15 @@ async function extractFitmentParameters(message) {
 
     let raw = completion.data.choices[0].message.content || "";
     raw = raw.trim();
-    console.log("Raw estrazione parametri:", raw);
+    console.log("Raw analyzeUserRequest:", raw);
 
+    // Gestione di eventuali ```json ... ```
     let jsonText = raw;
-
-    // Se il modello ha usato ```json ... ``` prendo solo il contenuto interno
     const fencedMatch = raw.match(/```(?:json)?([\s\S]*?)```/i);
     if (fencedMatch && fencedMatch[1]) {
       jsonText = fencedMatch[1].trim();
     }
 
-    // Se c'è altro testo intorno, prendo solo la prima {...}
     const braceMatch = jsonText.match(/\{[\s\S]*\}/);
     if (braceMatch) {
       jsonText = braceMatch[0];
@@ -173,22 +176,34 @@ async function extractFitmentParameters(message) {
 
     const parsed = JSON.parse(jsonText);
 
-    // Normalizzo i campi mancanti a null
+    // Normalizzo anno
+    let year = parsed.year ?? null;
+    if (typeof year === "string") {
+      const m = year.match(/(19|20)\d{2}/);
+      year = m ? parseInt(m[0], 10) : null;
+    }
+    if (typeof year === "number" && (year < 1950 || year > 2100)) {
+      year = null;
+    }
+
     return {
+      intent: parsed.intent ?? "other",
       brand: parsed.brand ?? null,
       model: parsed.model ?? null,
+      year: year ?? null,
       version: parsed.version ?? null,
       wheel: parsed.wheel ?? null,
-      diameter: parsed.diameter ?? null
+      diameter: parsed.diameter ?? null,
+      extra: parsed.extra ?? null
     };
   } catch (err) {
-    console.error("Errore estrazione parametri (parse):", err);
+    console.error("Errore analyzeUserRequest:", err);
     return null;
   }
 }
 
 // =========================
-// 6 FUNZIONI DB DI SUPPORTO
+// FUNZIONI DB DI SUPPORTO
 // =========================
 
 // 1) Trova ID del costruttore (marca auto)
@@ -209,8 +224,8 @@ async function findModelId(manufacturerId, modelName) {
   return rows.length ? rows[0].id : null;
 }
 
-// 3) Trova ID della versione auto (car_versions)
-async function findCarVersionId(modelId, versionName) {
+// 3) Trova ID della versione auto (car_versions) in base alla label versione
+async function findCarVersionIdByLabel(modelId, versionName) {
   const [rows] = await pool.query(
     "SELECT id FROM car_versions WHERE car = ? AND version LIKE ? LIMIT 1",
     [modelId, `%${versionName}%`]
@@ -250,6 +265,26 @@ async function getFitmentData(carVersionId, wheelAmId) {
   return rows.length ? rows[0] : null;
 }
 
+// Info di base su un modello di cerchio: diametri + finiture
+async function getWheelBasicInfo(wheelName) {
+  // [Non verificato] Adatta i nomi delle colonne se nel tuo DB sono diversi
+  const [rows] = await pool.query(
+    `SELECT 
+       m.id AS model_id,
+       m.model AS model_name,
+       GROUP_CONCAT(DISTINCT w.diameter ORDER BY w.diameter) AS diameters,
+       GROUP_CONCAT(DISTINCT v.finish ORDER BY v.finish) AS finishes
+     FROM am_wheel_models m
+     JOIN am_wheels w ON w.model = m.id
+     JOIN am_wheel_versions v ON v.am_wheel = w.id
+     WHERE m.model LIKE ?
+     GROUP BY m.id
+     LIMIT 1`,
+    [`%${wheelName}%`]
+  );
+  return rows.length ? rows[0] : null;
+}
+
 // ===================================================
 // CHATBOT /chat
 // ===================================================
@@ -262,95 +297,120 @@ app.post("/chat", async (req, res) => {
       return res.status(400).json({ error: "Messaggio vuoto." });
     }
 
-    // 1) Provo ad estrarre i parametri dal testo (marca, modello, versione, cerchio, diametro)
-    let extracted = null;
+    // Analisi richiesta (intent + parametri)
+    let analysis = await analyzeUserRequest(userMessage);
+    if (!analysis) {
+      analysis = { intent: "other" };
+    }
+    console.log("Analysis:", analysis);
+
     let fitmentRow = null;
     let homologations = [];
     let fitmentSummary = null;
-    let askForYear = false; // <-- nuovo flag
+    let wheelInfoSummary = null;
+    let needMoreCarData = false;
 
-    try {
-      extracted = await extractFitmentParameters(userMessage);
-      console.log("Parametri estratti:", extracted);
-
-      // Se abbiamo già un contesto "auto + cerchio", ma manca la versione,
-      // non proviamo il fitment e chiediamo all'utente più info (anno/serie)
-      if (
-        extracted &&
-        extracted.brand &&
-        extracted.model &&
-        extracted.wheel &&
-        extracted.diameter &&
-        !extracted.version // versione assente → chiedi info all'utente
-      ) {
-        askForYear = true;
+    // === Caso: info su modello di ruota (wheel_info) ===
+    if (analysis.intent === "wheel_info" && analysis.wheel) {
+      try {
+        wheelInfoSummary = await getWheelBasicInfo(analysis.wheel);
+        console.log("Wheel info:", wheelInfoSummary);
+      } catch (e) {
+        console.warn("Errore getWheelBasicInfo:", e.message || e);
       }
-
-      // Se invece abbiamo TUTTO (compresa la versione) allora proviamo il fitment
-      if (
-        extracted &&
-        extracted.brand &&
-        extracted.model &&
-        extracted.version &&
-        extracted.wheel &&
-        extracted.diameter
-      ) {
-        const manufacturerId = await findManufacturerId(extracted.brand);
-        if (!manufacturerId) throw new Error("Manufacturer non trovato");
-
-        const modelId = await findModelId(manufacturerId, extracted.model);
-        if (!modelId) throw new Error("Modello non trovato");
-
-        const carVersionId = await findCarVersionId(modelId, extracted.version);
-        if (!carVersionId) throw new Error("Versione auto non trovata");
-
-        const wheelModelId = await findWheelModelId(extracted.wheel);
-        if (!wheelModelId) throw new Error("Modello cerchio non trovato");
-
-        // estraggo numero dal diametro (es. "20 pollici" -> 20)
-        const diaMatch = String(extracted.diameter).match(/(\d{2})/);
-        const diameterNum = diaMatch ? parseInt(diaMatch[1], 10) : null;
-        if (!diameterNum) throw new Error("Diametro non valido");
-
-        const wheelVersion = await findWheelVersionId(wheelModelId, diameterNum);
-        if (!wheelVersion) throw new Error("Versione cerchio non trovata");
-
-        // 3) Cerco la combinazione in applications
-        fitmentRow = await getFitmentData(carVersionId, wheelVersion.am_wheel);
-
-        if (fitmentRow) {
-          if (fitmentRow.homologation_tuv) homologations.push({ type: "TUV", code: fitmentRow.homologation_tuv });
-          if (fitmentRow.homologation_kba) homologations.push({ type: "KBA", code: fitmentRow.homologation_kba });
-          if (fitmentRow.homologation_ece) homologations.push({ type: "ECE", code: fitmentRow.homologation_ece });
-          if (fitmentRow.homologation_jwl) homologations.push({ type: "JWL", code: fitmentRow.homologation_jwl });
-          if (fitmentRow.homologation_ita) homologations.push({ type: "ITA", code: fitmentRow.homologation_ita });
-
-          fitmentSummary = {
-            carVersionId,
-            wheelAmId: wheelVersion.am_wheel,
-            fitment_type: fitmentRow.fitment_type,
-            fitment_advice: fitmentRow.fitment_advice,
-            limitation: fitmentRow.limitation,
-            limitation_IT: fitmentRow.limitation_IT,
-            plug_play: !!fitmentRow.plug_play,
-            homologations
-          };
-        }
-      }
-    } catch (fitErr) {
-      console.warn("Errore o dati incompleti per fitment:", fitErr.message || fitErr);
-      // non blocco la chat: vado avanti senza dati DB
     }
 
-    // 4) Recupero o inizializzo la cronologia
+    // === Caso: fitment / consigli / omologazione basati sull'auto ===
+    const isCarFitmentIntent =
+      analysis.intent === "fitment_by_car" ||
+      analysis.intent === "recommendation_by_car" ||
+      analysis.intent === "omologation_by_car";
+
+    if (isCarFitmentIntent) {
+      // Se mancano dati base dell'auto → chiedi all'utente
+      if (!analysis.brand || !analysis.model || (!analysis.year && !analysis.version)) {
+        needMoreCarData = true;
+      }
+
+      // Se invece abbiamo TUTTO (brand, model, version, wheel, diameter) proviamo il fitment DB
+      if (
+        analysis.brand &&
+        analysis.model &&
+        analysis.version && // per ora ci basiamo sulla versione testuale
+        analysis.wheel &&
+        analysis.diameter
+      ) {
+        try {
+          const manufacturerId = await findManufacturerId(analysis.brand);
+          if (!manufacturerId) throw new Error("Manufacturer non trovato");
+
+          const modelId = await findModelId(manufacturerId, analysis.model);
+          if (!modelId) throw new Error("Modello non trovato");
+
+          const carVersionId = await findCarVersionIdByLabel(modelId, analysis.version);
+          if (!carVersionId) throw new Error("Versione auto non trovata");
+
+          const wheelModelId = await findWheelModelId(analysis.wheel);
+          if (!wheelModelId) throw new Error("Modello cerchio non trovato");
+
+          // estraggo numero dal diametro (es. "20 pollici" -> 20)
+          const diaMatch = String(analysis.diameter).match(/(\d{2})/);
+          const diameterNum = diaMatch ? parseInt(diaMatch[1], 10) : null;
+          if (!diameterNum) throw new Error("Diametro non valido");
+
+          const wheelVersion = await findWheelVersionId(wheelModelId, diameterNum);
+          if (!wheelVersion) throw new Error("Versione cerchio non trovata");
+
+          // Cerco la combinazione in applications
+          fitmentRow = await getFitmentData(carVersionId, wheelVersion.am_wheel);
+
+          if (fitmentRow) {
+            if (fitmentRow.homologation_tuv) homologations.push({ type: "TUV", code: fitmentRow.homologation_tuv });
+            if (fitmentRow.homologation_kba) homologations.push({ type: "KBA", code: fitmentRow.homologation_kba });
+            if (fitmentRow.homologation_ece) homologations.push({ type: "ECE", code: fitmentRow.homologation_ece });
+            if (fitmentRow.homologation_jwl) homologations.push({ type: "JWL", code: fitmentRow.homologation_jwl });
+            if (fitmentRow.homologation_ita) homologations.push({ type: "ITA", code: fitmentRow.homologation_ita });
+
+            fitmentSummary = {
+              carVersionId,
+              wheelAmId: wheelVersion.am_wheel,
+              fitment_type: fitmentRow.fitment_type,
+              fitment_advice: fitmentRow.fitment_advice,
+              limitation: fitmentRow.limitation,
+              limitation_IT: fitmentRow.limitation_IT,
+              plug_play: !!fitmentRow.plug_play,
+              homologations
+            };
+          }
+        } catch (e) {
+          console.warn("Errore fitment DB:", e.message || e);
+        }
+      }
+    }
+
+    // 4) Recupero cronologia utente
     const history = chatHistory.get(userId) || [];
 
     const messages = [
       { role: "system", content: fondmetalPrompt }
     ];
 
-    // Se ho dati DB validi, li passo al modello come system message aggiuntivo
-    if (fitmentSummary) {
+    // Dati tecnici ruota (wheel_info)
+    if (wheelInfoSummary) {
+      messages.push({
+        role: "system",
+        content:
+          "Dati tecnici dal database su un modello di cerchio richiesto dall'utente:\n" +
+          `- Modello: ${wheelInfoSummary.model_name}\n` +
+          `- Diametri disponibili: ${wheelInfoSummary.diameters || "non indicati"}\n` +
+          `- Finiture disponibili: ${wheelInfoSummary.finishes || "non indicate"}\n\n` +
+          "Quando l'utente chiede informazioni su questo modello di cerchio, usa questi dati per rispondere " +
+          "e non inventare nuove finiture o diametri."
+      });
+    }
+
+    // Dati tecnici fitment (auto + cerchio)
+    if (fitmentSummary && analysis) {
       const omologazioniText = homologations.length
         ? homologations.map(h => `${h.type}${h.code ? ` (${h.code})` : ""}`).join(", ")
         : "nessuna omologazione presente nel database per questa combinazione.";
@@ -359,11 +419,12 @@ app.post("/chat", async (req, res) => {
         role: "system",
         content:
           "Dati tecnici verificati dal database interno per la richiesta attuale:\n" +
-          `- Marca: ${extracted.brand}\n` +
-          `- Modello: ${extracted.model}\n` +
-          `- Versione: ${extracted.version}\n` +
-          `- Cerchio: ${extracted.wheel}\n` +
-          `- Diametro: ${extracted.diameter}\n` +
+          `- Marca: ${analysis.brand}\n` +
+          `- Modello: ${analysis.model}\n` +
+          `- Anno: ${analysis.year || "non specificato"}\n` +
+          `- Versione: ${analysis.version || "non specificata"}\n` +
+          `- Cerchio: ${analysis.wheel}\n` +
+          `- Diametro: ${analysis.diameter}\n` +
           `- Fitment type: ${fitmentSummary.fitment_type || "n/d"}\n` +
           `- Plug & Play: ${fitmentSummary.plug_play ? "sì" : "no"}\n` +
           `- Limitazioni: ${fitmentSummary.limitation_IT || fitmentSummary.limitation || "nessuna specificata"}\n` +
@@ -373,26 +434,25 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // Se manca anno/versione ma abbiamo già auto + cerchio → GUIDA l'utente
-    if (askForYear && !fitmentSummary) {
+    // Se mancano dati sull'auto e l'intento è legato al fitment dell'auto → fai domande, non risposte generiche
+    if (isCarFitmentIntent && needMoreCarData) {
       messages.push({
         role: "system",
         content:
-          "Per la richiesta attuale l'utente ti ha dato marca, modello e cerchio, " +
-          "ma NON ti ha indicato anno o versione della vettura. " +
-          "Prima di dare una risposta tecnica o parlare di omologazioni, fai una domanda di chiarimento: " +
-          "chiedi in modo chiaro e amichevole l'anno di immatricolazione (o il periodo, es. 'dal 2018 in poi') " +
-          "e, se necessario, la motorizzazione o la serie. " +
-          "Spiega brevemente che le misure e le omologazioni possono cambiare da una versione all'altra. " +
-          "Non inventare mai questi dati: chiedili sempre all'utente. " +
-          "In questa risposta concentrati su UNA sola domanda di chiarimento, non dare ancora un verdetto definitivo."
+          "L'utente ti sta chiedendo informazioni sui cerchi per una specifica auto (compatibilità, consigli o omologazioni), " +
+          "ma non ti ha ancora dato tutti i dati necessari. " +
+          "Prima di dare qualunque risposta tecnica, fai UNA o due domande chiare per completare i dati dell'auto: " +
+          "chiedi marca, modello e soprattutto anno di immatricolazione (o generazione/serie). " +
+          "Spiega in modo semplice che misure e omologazioni cambiano tra le generazioni, " +
+          "quindi hai bisogno di quei dati per essere preciso. " +
+          "Evita di rimandare subito al configuratore: guida tu la conversazione."
       });
     }
 
-    // aggiungo cronologia e messaggio utente
+    // Aggiungo cronologia e messaggio utente
     messages.push(...history, { role: "user", content: userMessage });
 
-    // 5) Chiamata finale a GPT per la risposta all'utente
+    // Chiamata finale a GPT per la risposta all'utente
     const completion = await openai.createChatCompletion({
       model: "gpt-4o",
       messages,
@@ -411,7 +471,8 @@ app.post("/chat", async (req, res) => {
 
     res.json({
       reply,
-      fitmentUsed: !!fitmentSummary
+      fitmentUsed: !!fitmentSummary,
+      wheelInfoUsed: !!wheelInfoSummary
     });
   } catch (error) {
     console.error("ERRORE /chat:", error.response?.data || error.message || error);
@@ -419,6 +480,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+// Avvio server
 app.listen(port, () => {
   console.log(`FondmetalAI API in ascolto su http://localhost:${port}`);
 });
@@ -440,12 +502,12 @@ app.get("/health-db", async (_req, res) => {
 
 app.get("/tcp-check", async (req, res) => {
   const host = process.env.DB_HOST;
-  const port = 3306;
+  const dbPort = 3306;
   const startTime = new Date().toISOString();
 
   // Funzione per recuperare IP pubblico della macchina (Render)
   const getPublicIP = () => {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       https.get("https://api.ipify.org?format=json", (resp) => {
         let data = "";
         resp.on("data", chunk => data += chunk);
@@ -476,7 +538,7 @@ app.get("/tcp-check", async (req, res) => {
       ok: true,
       note: "TCP connect OK (porta aperta)",
       host,
-      port,
+      port: dbPort,
       publicIP,
       timestamp: startTime
     });
@@ -488,7 +550,7 @@ app.get("/tcp-check", async (req, res) => {
       ok: false,
       error: "ETIMEDOUT (probabile porta chiusa/firewall)",
       host,
-      port,
+      port: dbPort,
       publicIP,
       timestamp: startTime
     });
@@ -499,20 +561,20 @@ app.get("/tcp-check", async (req, res) => {
       ok: false,
       error: String(err.message || err),
       host,
-      port,
+      port: dbPort,
       publicIP,
       timestamp: startTime
     });
   });
 
   try {
-    socket.connect(port, host);
+    socket.connect(dbPort, host);
   } catch (e) {
     res.status(500).json({
       ok: false,
       error: String(e.message || e),
       host,
-      port,
+      port: dbPort,
       publicIP,
       timestamp: startTime
     });
@@ -589,11 +651,10 @@ app.get("/fitment-debug", async (req, res) => {
 
     const row = rows[0];
 
-    // Ricostruisco una lista di omologazioni presenti (TUV, KBA, ECE, JWL, ITA)
-    const homologations = [];
+    const homologationsDbg = [];
 
     if (row.homologation_tuv) {
-      homologations.push({
+      homologationsDbg.push({
         type: "TUV",
         code: row.homologation_tuv,
         doc: row.homologation_tuv_doc || null,
@@ -601,7 +662,7 @@ app.get("/fitment-debug", async (req, res) => {
       });
     }
     if (row.homologation_kba) {
-      homologations.push({
+      homologationsDbg.push({
         type: "KBA",
         code: row.homologation_kba,
         doc: row.homologation_kba_doc || null,
@@ -609,7 +670,7 @@ app.get("/fitment-debug", async (req, res) => {
       });
     }
     if (row.homologation_ece) {
-      homologations.push({
+      homologationsDbg.push({
         type: "ECE",
         code: row.homologation_ece,
         doc: row.homologation_ece_doc || null,
@@ -617,7 +678,7 @@ app.get("/fitment-debug", async (req, res) => {
       });
     }
     if (row.homologation_jwl) {
-      homologations.push({
+      homologationsDbg.push({
         type: "JWL",
         code: row.homologation_jwl,
         doc: row.homologation_jwl_doc || null,
@@ -625,7 +686,7 @@ app.get("/fitment-debug", async (req, res) => {
       });
     }
     if (row.homologation_ita) {
-      homologations.push({
+      homologationsDbg.push({
         type: "ITA",
         code: row.homologation_ita,
         doc: row.homologation_ita_doc || null,
@@ -644,8 +705,8 @@ app.get("/fitment-debug", async (req, res) => {
         limitation_IT: row.limitation_IT,
         plug_play: !!row.plug_play
       },
-      homologations,
-      raw: row // per debug completo
+      homologations: homologationsDbg,
+      raw: row
     });
   } catch (err) {
     console.error("[DB] /fitment-debug error:", err);
