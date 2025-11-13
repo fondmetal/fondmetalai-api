@@ -160,7 +160,7 @@ async function getFitmentData(carVersionId, wheelAmId) {
 }
 
 // ===================================================
-// CHATBOT /chat (per ora ancora “semplice”, senza DB)
+// CHATBOT /chat
 // ===================================================
 app.post("/chat", async (req, res) => {
   try {
@@ -171,14 +171,108 @@ app.post("/chat", async (req, res) => {
       return res.status(400).json({ error: "Messaggio vuoto." });
     }
 
-    // Recupera o inizializza la cronologia
+    // 1) Provo ad estrarre i parametri dal testo (marca, modello, versione, cerchio, diametro)
+    let extracted = null;
+    let fitmentRow = null;
+    let homologations = [];
+    let fitmentSummary = null;
+
+    try {
+      extracted = await extractFitmentParameters(userMessage);
+      console.log("Parametri estratti:", extracted);
+
+      if (
+        extracted &&
+        extracted.brand &&
+        extracted.model &&
+        extracted.version &&
+        extracted.wheel &&
+        extracted.diameter
+      ) {
+        // 2) Risolvo gli ID nel DB passo-passo
+        const manufacturerId = await findManufacturerId(extracted.brand);
+        if (!manufacturerId) throw new Error("Manufacturer non trovato");
+
+        const modelId = await findModelId(manufacturerId, extracted.model);
+        if (!modelId) throw new Error("Modello non trovato");
+
+        const carVersionId = await findCarVersionId(modelId, extracted.version);
+        if (!carVersionId) throw new Error("Versione auto non trovata");
+
+        const wheelModelId = await findWheelModelId(extracted.wheel);
+        if (!wheelModelId) throw new Error("Modello cerchio non trovato");
+
+        // estraggo numero dal diametro (es. "20 pollici" -> 20)
+        const diaMatch = String(extracted.diameter).match(/(\d{2})/);
+        const diameterNum = diaMatch ? parseInt(diaMatch[1], 10) : null;
+        if (!diameterNum) throw new Error("Diametro non valido");
+
+        const wheelVersion = await findWheelVersionId(wheelModelId, diameterNum);
+        if (!wheelVersion) throw new Error("Versione cerchio non trovata");
+
+        // 3) Cerco la combinazione in applications
+        fitmentRow = await getFitmentData(carVersionId, wheelVersion.am_wheel);
+
+        if (fitmentRow) {
+          // preparo omologazioni in formato pulito
+          if (fitmentRow.homologation_tuv) homologations.push({ type: "TUV", code: fitmentRow.homologation_tuv });
+          if (fitmentRow.homologation_kba) homologations.push({ type: "KBA", code: fitmentRow.homologation_kba });
+          if (fitmentRow.homologation_ece) homologations.push({ type: "ECE", code: fitmentRow.homologation_ece });
+          if (fitmentRow.homologation_jwl) homologations.push({ type: "JWL", code: fitmentRow.homologation_jwl });
+          if (fitmentRow.homologation_ita) homologations.push({ type: "ITA", code: fitmentRow.homologation_ita });
+
+          fitmentSummary = {
+            carVersionId,
+            wheelAmId: wheelVersion.am_wheel,
+            fitment_type: fitmentRow.fitment_type,
+            fitment_advice: fitmentRow.fitment_advice,
+            limitation: fitmentRow.limitation,
+            limitation_IT: fitmentRow.limitation_IT,
+            plug_play: !!fitmentRow.plug_play,
+            homologations
+          };
+        }
+      }
+    } catch (fitErr) {
+      console.warn("Errore o dati incompleti per fitment:", fitErr.message || fitErr);
+      // non blocco la chat: vado avanti senza dati DB
+    }
+
+    // 4) Recupero o inizializzo la cronologia
     const history = chatHistory.get(userId) || [];
+
     const messages = [
-      { role: "system", content: fondmetalPrompt },
-      ...history,
-      { role: "user", content: userMessage }
+      { role: "system", content: fondmetalPrompt }
     ];
 
+    // Se ho dati DB validi, li passo al modello come system message aggiuntivo
+    if (fitmentSummary) {
+      const omologazioniText = homologations.length
+        ? homologations.map(h => `${h.type}${h.code ? ` (${h.code})` : ""}`).join(", ")
+        : "nessuna omologazione presente nel database per questa combinazione.";
+
+      messages.push({
+        role: "system",
+        content:
+          "Dati tecnici verificati dal database interno per la richiesta attuale:\n" +
+          `- Marca: ${extracted.brand}\n` +
+          `- Modello: ${extracted.model}\n` +
+          `- Versione: ${extracted.version}\n` +
+          `- Cerchio: ${extracted.wheel}\n` +
+          `- Diametro: ${extracted.diameter}\n` +
+          `- Fitment type: ${fitmentSummary.fitment_type || "n/d"}\n` +
+          `- Plug & Play: ${fitmentSummary.plug_play ? "sì" : "no"}\n` +
+          `- Limitazioni: ${fitmentSummary.limitation_IT || fitmentSummary.limitation || "nessuna specificata"}\n` +
+          `- Omologazioni: ${omologazioniText}\n\n` +
+          "Quando rispondi su questa combinazione specifica auto-cerchio devi basarti su questi dati e non inventare nulla. " +
+          "Se l'utente parla di un'altra auto o di un altro cerchio per cui non hai dati dal database, spiegalo chiaramente e chiedi maggiori dettagli."
+      });
+    }
+
+    // aggiungo cronologia e messaggio utente
+    messages.push(...history, { role: "user", content: userMessage });
+
+    // 5) Chiamata finale a GPT per la risposta all'utente
     const completion = await openai.createChatCompletion({
       model: "gpt-4o",
       messages,
@@ -195,9 +289,15 @@ app.post("/chat", async (req, res) => {
     ].slice(-10);
     chatHistory.set(userId, updatedHistory);
 
-    res.json({ reply });
+    // Per compatibilità col front-end restituisco reply, ma tengo anche info debug opzionale
+    res.json({
+      reply,
+      fitmentUsed: !!fitmentSummary
+      // volendo puoi aggiungere fitmentSummary qui per debug
+      // fitmentSummary
+    });
   } catch (error) {
-    console.error("ERRORE OPENAI:", error.response?.data || error.message || error);
+    console.error("ERRORE /chat:", error.response?.data || error.message || error);
     res.status(500).json({ error: "Errore nella generazione della risposta." });
   }
 });
