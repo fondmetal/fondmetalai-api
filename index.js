@@ -72,8 +72,15 @@ async function extractFitmentParameters(message) {
           - versione
           - cerchio richiesto
           - diametro
-            
-          Rispondi SOLO in JSON, così:
+
+          Devi restituire SOLO un oggetto JSON valido.
+          IMPORTANTISSIMO:
+          - NIENTE testo prima o dopo
+          - NIENTE spiegazioni
+          - NIENTE blocchi di codice
+          - NIENTE backtick (niente \`\`\`)
+          
+          Formato esatto:
           {
             "brand": "...",
             "model": "...",
@@ -88,10 +95,36 @@ async function extractFitmentParameters(message) {
       ]
     });
 
-    const raw = completion.data.choices[0].message.content;
-    return JSON.parse(raw);
+    let raw = completion.data.choices[0].message.content || "";
+    raw = raw.trim();
+    console.log("Raw estrazione parametri:", raw);
+
+    let jsonText = raw;
+
+    // Se il modello ha usato ```json ... ``` prendo solo il contenuto interno
+    const fencedMatch = raw.match(/```(?:json)?([\s\S]*?)```/i);
+    if (fencedMatch && fencedMatch[1]) {
+      jsonText = fencedMatch[1].trim();
+    }
+
+    // Se c'è altro testo intorno, prendo solo la prima {...}
+    const braceMatch = jsonText.match(/\{[\s\S]*\}/);
+    if (braceMatch) {
+      jsonText = braceMatch[0];
+    }
+
+    const parsed = JSON.parse(jsonText);
+
+    // Normalizzo i campi mancanti a null
+    return {
+      brand: parsed.brand ?? null,
+      model: parsed.model ?? null,
+      version: parsed.version ?? null,
+      wheel: parsed.wheel ?? null,
+      diameter: parsed.diameter ?? null
+    };
   } catch (err) {
-    console.error("Errore estrazione parametri:", err);
+    console.error("Errore estrazione parametri (parse):", err);
     return null;
   }
 }
