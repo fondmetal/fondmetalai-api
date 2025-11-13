@@ -55,6 +55,113 @@ Mantieni sempre un tono amichevole e umano, non troppo burocratico.
 
 const chatHistory = new Map(); // userID → array di messaggi
 
+// =========================
+// ESTRAZIONE PARAMETRI DA TESTO (GPT)
+// =========================
+async function extractFitmentParameters(message) {
+  try {
+    const completion = await openai.createChatCompletion({
+      model: "gpt-4o",
+      temperature: 0,
+      messages: [
+        {
+          role: "system",
+          content: `Estrai dal testo solo questi valori, se presenti:
+          - marca auto
+          - modello auto
+          - versione
+          - cerchio richiesto
+          - diametro
+            
+          Rispondi SOLO in JSON, così:
+          {
+            "brand": "...",
+            "model": "...",
+            "version": "...",
+            "wheel": "...",
+            "diameter": "..."
+          }
+
+          Se un valore non è presente, usa null.`
+        },
+        { role: "user", content: message }
+      ]
+    });
+
+    const raw = completion.data.choices[0].message.content;
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error("Errore estrazione parametri:", err);
+    return null;
+  }
+}
+
+// =========================
+// 6 FUNZIONI DB DI SUPPORTO
+// =========================
+
+// 1) Trova ID del costruttore (marca auto)
+async function findManufacturerId(name) {
+  const [rows] = await pool.query(
+    "SELECT id FROM car_manufacturers WHERE manufacturer LIKE ? LIMIT 1",
+    [`%${name}%`]
+  );
+  return rows.length ? rows[0].id : null;
+}
+
+// 2) Trova ID del modello (car_models)
+async function findModelId(manufacturerId, modelName) {
+  const [rows] = await pool.query(
+    "SELECT id FROM car_models WHERE manufacturer = ? AND model LIKE ? LIMIT 1",
+    [manufacturerId, `%${modelName}%`]
+  );
+  return rows.length ? rows[0].id : null;
+}
+
+// 3) Trova ID della versione auto (car_versions)
+async function findCarVersionId(modelId, versionName) {
+  const [rows] = await pool.query(
+    "SELECT id FROM car_versions WHERE car = ? AND version LIKE ? LIMIT 1",
+    [modelId, `%${versionName}%`]
+  );
+  return rows.length ? rows[0].id : null;
+}
+
+// 4) Trova ID del modello cerchio (am_wheel_models)
+async function findWheelModelId(modelName) {
+  const [rows] = await pool.query(
+    "SELECT id FROM am_wheel_models WHERE model LIKE ? LIMIT 1",
+    [`%${modelName}%`]
+  );
+  return rows.length ? rows[0].id : null;
+}
+
+// 5) Trova versione cerchio (diametro) e relativo am_wheel
+async function findWheelVersionId(wheelModelId, diameter) {
+  const dia = Number(diameter);
+  const [rows] = await pool.query(
+    `SELECT v.id, v.am_wheel
+     FROM am_wheel_versions v
+     JOIN am_wheels w ON v.am_wheel = w.id
+     WHERE w.model = ? AND w.diameter = ?
+     LIMIT 1`,
+    [wheelModelId, dia]
+  );
+  return rows.length ? rows[0] : null; // { id: versione_id, am_wheel: wheelId }
+}
+
+// 6) Recupera la combinazione in applications
+async function getFitmentData(carVersionId, wheelAmId) {
+  const [rows] = await pool.query(
+    "SELECT * FROM applications WHERE car = ? AND am_wheel = ? LIMIT 1",
+    [carVersionId, wheelAmId]
+  );
+  return rows.length ? rows[0] : null;
+}
+
+// ===================================================
+// CHATBOT /chat (per ora ancora “semplice”, senza DB)
+// ===================================================
 app.post("/chat", async (req, res) => {
   try {
     const userMessage = req.body.message;
@@ -81,7 +188,11 @@ app.post("/chat", async (req, res) => {
     const reply = completion.data.choices[0].message.content;
 
     // Aggiorna cronologia (massimo 10 scambi)
-    const updatedHistory = [...history, { role: "user", content: userMessage }, { role: "assistant", content: reply }].slice(-10);
+    const updatedHistory = [
+      ...history,
+      { role: "user", content: userMessage },
+      { role: "assistant", content: reply }
+    ].slice(-10);
     chatHistory.set(userId, updatedHistory);
 
     res.json({ reply });
@@ -95,6 +206,10 @@ app.listen(port, () => {
   console.log(`FondmetalAI API in ascolto su http://localhost:${port}`);
 });
 
+// =========================
+// HEALTHCHECK & DEBUG
+// =========================
+
 app.get("/health-db", async (_req, res) => {
   try {
     const [one] = await pool.query("SELECT 1 AS ok");
@@ -105,7 +220,6 @@ app.get("/health-db", async (_req, res) => {
     res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 });
-
 
 app.get("/tcp-check", async (req, res) => {
   const host = process.env.DB_HOST;
