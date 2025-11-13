@@ -321,3 +321,76 @@ app.get("/fitment-debug", async (req, res) => {
     res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 });
+
+app.post("/fitment", async (req, res) => {
+  try {
+    const { carId, wheelId } = req.body;
+
+    if (!carId || !wheelId) {
+      return res.status(400).json({
+        ok: false,
+        error: "Parametri mancanti. Devi inviare carId e wheelId."
+      });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT
+         id,
+         car,
+         am_wheel,
+         centering_ring,
+         bolt_nut,
+         homologation_tuv, homologation_tuv_doc, note_tuv,
+         homologation_kba, homologation_kba_doc, note_kba,
+         homologation_ece, homologation_ece_doc, note_ece,
+         homologation_jwl, homologation_jwl_doc,
+         homologation_ita, homologation_ita_doc, note_ita,
+         limitation, limitation_IT,
+         fitment_type,
+         fitment_advice,
+         plug_play
+       FROM applications
+       WHERE car = ? AND am_wheel = ?
+       LIMIT 1`,
+      [carId, wheelId]
+    );
+
+    if (!rows.length) {
+      return res.json({
+        ok: false,
+        error: "Nessuna combinazione trovata",
+        carId,
+        wheelId
+      });
+    }
+
+    const row = rows[0];
+    const homologations = [];
+
+    if (row.homologation_tuv) homologations.push({ type: "TUV", code: row.homologation_tuv });
+    if (row.homologation_kba) homologations.push({ type: "KBA", code: row.homologation_kba });
+    if (row.homologation_ece) homologations.push({ type: "ECE", code: row.homologation_ece });
+    if (row.homologation_jwl) homologations.push({ type: "JWL", code: row.homologation_jwl });
+    if (row.homologation_ita) homologations.push({ type: "ITA", code: row.homologation_ita });
+
+    res.json({
+      ok: true,
+      carId,
+      wheelId,
+      fitment: {
+        type: row.fitment_type,
+        advice: row.fitment_advice,
+        limitation: row.limitation,
+        limitation_IT: row.limitation_IT,
+        plugAndPlay: !!row.plug_play
+      },
+      homologations
+    });
+  } catch (err) {
+    console.error("[DB] /fitment error:", err);
+    res.status(500).json({
+      ok: false,
+      error: String(err?.message || err)
+    });
+  }
+});
