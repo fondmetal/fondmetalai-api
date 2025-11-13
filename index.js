@@ -187,3 +187,25 @@ app.get("/tcp-check", async (req, res) => {
     });
   }
 });
+
+// Elenco tabelle visibili nel DB
+app.get("/db-tables", async (_req, res) => {
+  try {
+    const [rows] = await pool.query("SHOW TABLES");
+    res.json({ ok: true, tables: rows });
+  } catch (err) {
+    console.error("[DB] /db-tables error:", err);
+    res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+// Sample dalla tabella applications (debug)
+app.get("/db-applications-sample", async (_req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT * FROM applications LIMIT 10");
+    res.json({ ok: true, count: rows.length, rows });
+  } catch (err) {
+    console.error("[DB] /db-applications-sample error:", err);
+    res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
+});
