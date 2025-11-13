@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { Configuration, OpenAIApi } from "openai";
 import pool from "./db.js";
+import net from 'net';
 
 dotenv.config();
 
@@ -46,7 +47,7 @@ Per i veicoli commerciali, consiglia PRO1 o PRO2, in base al numero di fori (PRO
 Le finiture e i diametri devono essere solo ed esclusivamente quelle presenti nelle pagine ufficiali dei prodotti del sito.
 Se il cliente chiede informazioni su prezzi e disponibilità, il GPT deve indirizzarlo a contattare il rivenditore più vicino a lui.
 Se l'utente chiede quale sia il rivenditore più vicino, calcola in base alla lista presente quello con la distanza minore alla posizione che viene fornita dall'utente.
-Il GPT può rispondere sia in italiano che in inglese, adattandosi alla lingua dell'utente.
+Il GPT può rispondere in qualunque lingua, adattandosi alla lingua dell'utente.
 Rispondi in modo veloce, professionale e cordiale, con frasi brevi e chiare.
 Mantieni sempre un tono amichevole e umano, non troppo burocratico.
 `;
@@ -101,5 +102,29 @@ app.get("/health-db", async (_req, res) => {
   } catch (err) {
     console.error("[DB] Health error:", err); // <— log completo
     res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+
+app.get('/tcp-check', async (req, res) => {
+  const host = process.env.DB_HOST;
+  const port = 3306;
+  const socket = new net.Socket();
+  const timeoutMs = 4000;
+
+  socket.setTimeout(timeoutMs);
+  socket.once('connect', () => {
+    socket.destroy();
+    res.json({ ok: true, host, port, note: 'TCP connect OK (porta aperta)' });
+  });
+  socket.once('timeout', () => {
+    socket.destroy();
+    res.status(504).json({ ok: false, host, port, error: 'ETIMEDOUT (probabile porta chiusa/firewall)' });
+  });
+  socket.once('error', (err) => {
+    res.status(500).json({ ok: false, host, port, error: String(err.message || err) });
+  });
+  try { socket.connect(port, host); } catch (e) {
+    res.status(500).json({ ok: false, host, port, error: String(e.message || e) });
   }
 });
