@@ -3,7 +3,8 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { Configuration, OpenAIApi } from "openai";
 import pool from "./db.js";
-import net from 'net';
+import net from "net";
+import https from "https";
 
 dotenv.config();
 
@@ -106,25 +107,83 @@ app.get("/health-db", async (_req, res) => {
 });
 
 
-app.get('/tcp-check', async (req, res) => {
+app.get("/tcp-check", async (req, res) => {
   const host = process.env.DB_HOST;
   const port = 3306;
+  const startTime = new Date().toISOString();
+
+  // Funzione per recuperare IP pubblico della macchina (Render)
+  const getPublicIP = () => {
+    return new Promise((resolve, reject) => {
+      https.get("https://api.ipify.org?format=json", (resp) => {
+        let data = "";
+        resp.on("data", chunk => data += chunk);
+        resp.on("end", () => {
+          try {
+            const json = JSON.parse(data);
+            resolve(json.ip);
+          } catch (e) {
+            resolve("Non disponibile");
+          }
+        });
+      }).on("error", (err) => {
+        resolve("Errore nel recupero IP: " + err.message);
+      });
+    });
+  };
+
+  const publicIP = await getPublicIP();
+
   const socket = new net.Socket();
-  const timeoutMs = 4000;
+  const timeoutMs = 5000;
 
   socket.setTimeout(timeoutMs);
-  socket.once('connect', () => {
+
+  socket.once("connect", () => {
     socket.destroy();
-    res.json({ ok: true, host, port, note: 'TCP connect OK (porta aperta)' });
+    res.json({
+      ok: true,
+      note: "TCP connect OK (porta aperta)",
+      host,
+      port,
+      publicIP,
+      timestamp: startTime
+    });
   });
-  socket.once('timeout', () => {
+
+  socket.once("timeout", () => {
     socket.destroy();
-    res.status(504).json({ ok: false, host, port, error: 'ETIMEDOUT (probabile porta chiusa/firewall)' });
+    res.status(504).json({
+      ok: false,
+      error: "ETIMEDOUT (probabile porta chiusa/firewall)",
+      host,
+      port,
+      publicIP,
+      timestamp: startTime
+    });
   });
-  socket.once('error', (err) => {
-    res.status(500).json({ ok: false, host, port, error: String(err.message || err) });
+
+  socket.once("error", (err) => {
+    res.status(500).json({
+      ok: false,
+      error: String(err.message || err),
+      host,
+      port,
+      publicIP,
+      timestamp: startTime
+    });
   });
-  try { socket.connect(port, host); } catch (e) {
-    res.status(500).json({ ok: false, host, port, error: String(e.message || e) });
+
+  try {
+    socket.connect(port, host);
+  } catch (e) {
+    res.status(500).json({
+      ok: false,
+      error: String(e.message || e),
+      host,
+      port,
+      publicIP,
+      timestamp: startTime
+    });
   }
 });
