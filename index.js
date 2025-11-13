@@ -209,3 +209,115 @@ app.get("/db-applications-sample", async (_req, res) => {
     res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 });
+
+// Endpoint di debug: restituisce la combinazione cerchio-auto e le omologazioni
+app.get("/fitment-debug", async (req, res) => {
+  try {
+    const carId = parseInt(req.query.car, 10);
+    const wheelId = parseInt(req.query.wheel, 10);
+
+    if (!carId || !wheelId) {
+      return res.status(400).json({
+        ok: false,
+        error: "Parametri mancanti. Usa /fitment-debug?car=ID_CAR&wheel=ID_WHEEL"
+      });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT
+         id,
+         car,
+         am_wheel,
+         centering_ring,
+         bolt_nut,
+         homologation_tuv, homologation_tuv_doc, note_tuv,
+         homologation_kba, homologation_kba_doc, note_kba,
+         homologation_ece, homologation_ece_doc, note_ece,
+         homologation_jwl, homologation_jwl_doc,
+         homologation_ita, homologation_ita_doc, note_ita,
+         limitation, limitation_IT,
+         fitment_type,
+         fitment_advice,
+         plug_play,
+         created_at,
+         updated_at
+       FROM applications
+       WHERE car = ? AND am_wheel = ?
+       LIMIT 1`,
+      [carId, wheelId]
+    );
+
+    if (!rows.length) {
+      return res.json({
+        ok: false,
+        error: "Nessuna combinazione trovata per questi ID",
+        carId,
+        wheelId
+      });
+    }
+
+    const row = rows[0];
+
+    // Ricostruisco una lista di omologazioni presenti (TUV, KBA, ECE, JWL, ITA)
+    const homologations = [];
+
+    if (row.homologation_tuv) {
+      homologations.push({
+        type: "TUV",
+        code: row.homologation_tuv,
+        doc: row.homologation_tuv_doc || null,
+        note: row.note_tuv || null
+      });
+    }
+    if (row.homologation_kba) {
+      homologations.push({
+        type: "KBA",
+        code: row.homologation_kba,
+        doc: row.homologation_kba_doc || null,
+        note: row.note_kba || null
+      });
+    }
+    if (row.homologation_ece) {
+      homologations.push({
+        type: "ECE",
+        code: row.homologation_ece,
+        doc: row.homologation_ece_doc || null,
+        note: row.note_ece || null
+      });
+    }
+    if (row.homologation_jwl) {
+      homologations.push({
+        type: "JWL",
+        code: row.homologation_jwl,
+        doc: row.homologation_jwl_doc || null,
+        note: null
+      });
+    }
+    if (row.homologation_ita) {
+      homologations.push({
+        type: "ITA",
+        code: row.homologation_ita,
+        doc: row.homologation_ita_doc || null,
+        note: row.note_ita || null
+      });
+    }
+
+    return res.json({
+      ok: true,
+      carId,
+      wheelId,
+      fitment: {
+        fitment_type: row.fitment_type,
+        fitment_advice: row.fitment_advice,
+        limitation: row.limitation,
+        limitation_IT: row.limitation_IT,
+        plug_play: !!row.plug_play
+      },
+      homologations,
+      raw: row // per debug completo
+    });
+  } catch (err) {
+    console.error("[DB] /fitment-debug error:", err);
+    res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
+});
