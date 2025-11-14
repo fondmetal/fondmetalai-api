@@ -42,12 +42,23 @@ RUOLO GENERALE
   - nei dati tecnici strutturati che ti vengono passati nel contesto (ad es. tramite messaggi di sistema o elenchi di dati).
 - Quando NON hai dati sufficienti, lo dici chiaramente e non inventi mai misure, omologazioni o abbinamenti cerchio/auto.
 
+STILE DI COMUNICAZIONE
+- Sei più commerciale che tecnico: il tuo obiettivo è aiutare l'utente a capire quali cerchi possono andare bene e invogliarlo a scegliere un prodotto Fondmetal.
+- Usa un linguaggio semplice e concreto, evitando gergo troppo tecnico se non è necessario.
+- Quando spieghi concetti tecnici (ET, canale, centraggio, ecc.), fallo in modo breve e con esempi pratici.
+- Metti sempre in evidenza i vantaggi per l'utente: estetica (look più sportivo/elegante), praticità (plug & play, nessuna modifica particolare), tranquillità (omologazioni disponibili, compatibilità).
+- Ogni volta che proponi un cerchio, aggiungi una breve nota di stile o utilizzo (es. più sportivo, più elegante, ideale per uso quotidiano, ecc.).
+
 USO DEI DATI TECNICI
 - Se nei messaggi di sistema trovi dati tecnici strutturati (ad esempio fitment, omologazioni, plug & play, limitazioni, ecc.):
   - Considerali come la fonte principale e affidabile.
   - Non modificarli, non interpretarli "a fantasia".
   - Se non trovi una certa informazione nei dati ricevuti, considera che NON ce l'hai.
-- Se non hai dati tecnici strutturati per la combinazione richiesta, puoi dare indicazioni generali ma NON confermare mai in modo assoluto che un cerchio è omologato o perfettamente compatibile.
+- Se non hai dati tecnici strutturati per la combinazione richiesta:
+  - NON limitarti a dire di usare il configuratore.
+  - Dai comunque una spiegazione generale dell'argomento (es. differenza tra 17" e 18", cosa significa omologazione).
+  - Spiega quali informazioni ti mancano (es. anno, versione, misura dei pneumatici).
+  - Solo alla fine suggerisci il configuratore 3D sul nostro sito o il contatto con un rivenditore/assistenza come passo successivo.
 
 COMPORTAMENTO PER I CASI D'USO PRINCIPALI
 
@@ -59,7 +70,9 @@ COMPORTAMENTO PER I CASI D'USO PRINCIPALI
    - Se hai dati tecnici strutturati per quell'auto:
      - Spiega quali cerchi risultano compatibili e in che configurazione (es. diametri, canali, ET, eventuali limitazioni).
    - Se NON hai dati strutturati sufficienti:
-     - Invita l'utente a usare il configuratore 3D sul nostro sito, spiegando brevemente cosa gli permetterà di vedere.
+     - Dai comunque qualche indicazione generale (es. quali diametri sono più frequenti su quel tipo di vettura, differenze estetiche tra misure).
+     - Spiega quali informazioni mancano per essere precisi.
+     - Solo alla fine invita l'utente a usare il configuratore 3D sul nostro sito, spiegando brevemente cosa gli permetterà di vedere.
 
 2) L'utente vuole sapere quali cerchi gli consigli per la sua auto.
    - Prima raccogli gli stessi dati del punto 1 (marca, modello, anno, uso dell'auto).
@@ -73,9 +86,11 @@ COMPORTAMENTO PER I CASI D'USO PRINCIPALI
 3) L'utente vuole sapere quali cerchi sono omologati per la sua auto.
    - Raccogli sempre prima i dati di identificazione della vettura (marca, modello, anno).
    - Se nei dati tecnici strutturati ci sono informazioni di omologazione (ECE, TUV, KBA, JWL, ITA):
-     - Elenca chiaramente i tipi di omologazione disponibili e spiega in quali mercati o condizioni sono valide, se questa informazione è esplicita.
+     - Elenca chiaramente i tipi di omologazione disponibili per i cerchi associati a questa famiglia di vetture.
+     - Spiega in modo semplice che, se una colonna di omologazione nel database è vuota, significa che per quella combinazione non è disponibile quell'omologazione.
    - Se NON hai dati strutturati sulla omologazione per quella combinazione:
      - Spiega che non puoi confermare l'omologazione senza consultare i dati ufficiali.
+     - Fornisci qualche indicazione generale (es. differenza tra omologazione ECE e TUV).
      - Suggerisci di:
        - verificare tramite il configuratore 3D sul nostro sito, oppure
        - contattare direttamente il rivenditore o l'assistenza Fondmetal.
@@ -98,7 +113,7 @@ COMPORTAMENTO PER I CASI D'USO PRINCIPALI
      - forature, centraggio, caratteristiche costruttive,
      - differenze tra linee o modelli.
    - In questi casi rispondi in modo didattico ma conciso, spiegando i concetti in modo chiaro.
-   - Se la domanda è generica (es. "cos'è l'ET?"), fornisci una spiegazione tecnica semplice e neutra.
+   - Se la domanda è generica (es. "cos'è l'ET?"), fornisci una spiegazione tecnica semplice e neutra, collegandola se possibile ai cerchi Fondmetal.
    - Se la domanda riguarda uno specifico modello di cerchio e hai dati strutturati, utilizza quei dati per dare una risposta precisa.
 
 GESTIONE DEL DIALOGO
@@ -353,6 +368,30 @@ async function getCarsForWheel(wheelName, diameter) {
   return rows;
 }
 
+// 10) Omologazioni per una famiglia di vetture (per intent omologation_by_car)
+async function getHomologationsByCarModel(modelId) {
+  const [rows] = await pool.query(
+    `SELECT 
+       m.model    AS wheel_model,
+       w.diameter AS diameter,
+       MAX(a.homologation_tuv) AS homologation_tuv,
+       MAX(a.homologation_kba) AS homologation_kba,
+       MAX(a.homologation_ece) AS homologation_ece,
+       MAX(a.homologation_jwl) AS homologation_jwl,
+       MAX(a.homologation_ita) AS homologation_ita
+     FROM car_versions cv
+     JOIN applications a   ON a.car = cv.id
+     JOIN am_wheels w      ON a.am_wheel = w.id
+     JOIN am_wheel_models m ON w.model = m.id
+     WHERE cv.car = ?
+       AND w.status = 'ACTIVE'
+     GROUP BY m.model, w.diameter
+     ORDER BY m.model, w.diameter`,
+    [modelId]
+  );
+  return rows;
+}
+
 // ===================================================
 // CHATBOT /chat
 // ===================================================
@@ -397,6 +436,7 @@ app.post("/chat", async (req, res) => {
     let wheelInfoSummary = null;
     let carWheelOptions = null;
     let wheelFitmentCars = null;
+    let carHomologations = null;
     let needMoreCarData = false;
     let needMoreWheelData = false;
 
@@ -437,7 +477,7 @@ app.post("/chat", async (req, res) => {
     let modelId = null;
 
     if (isCarFitmentIntent) {
-      // Se manca qualcosa dell'auto → segnalalo al modello
+      // Se manca qualcosa dell'auto → segnalalo al modello (per fare domande, non per bloccare il DB)
       if (!analysis.brand || !analysis.model || (!analysis.year && !analysis.version)) {
         needMoreCarData = true;
       }
@@ -450,10 +490,23 @@ app.post("/chat", async (req, res) => {
             modelId = await findModelId(manufacturerId, analysis.model);
           }
           if (modelId) {
+            // Cerchi associati alla famiglia di vetture
             carWheelOptions = await getWheelModelsForCarModel(modelId);
+
+            // Se sta chiedendo omologazioni, recuperiamo anche le omologazioni per famiglia
+            if (analysis.intent === "omologation_by_car") {
+              carHomologations = await getHomologationsByCarModel(modelId);
+              console.log(
+                "Homologations by car model:",
+                carHomologations?.length || 0
+              );
+            }
           }
         } catch (err) {
-          console.warn("Errore getWheelModelsForCarModel:", err.message || err);
+          console.warn(
+            "Errore getWheelModelsForCarModel/getHomologationsByCarModel:",
+            err.message || err
+          );
         }
       }
 
@@ -574,6 +627,37 @@ app.post("/chat", async (req, res) => {
       });
     }
 
+    // Dati tecnici omologazioni per famiglia di vetture (omologation_by_car, anche senza cerchio specifico)
+    if (carHomologations && carHomologations.length) {
+      const lines = carHomologations.map((r) => {
+        const types = [];
+        if (r.homologation_ece) types.push("ECE");
+        if (r.homologation_tuv) types.push("TUV");
+        if (r.homologation_kba) types.push("KBA");
+        if (r.homologation_jwl) types.push("JWL");
+        if (r.homologation_ita) types.push("ITA");
+        const typesText = types.length
+          ? types.join(", ")
+          : "nessuna omologazione disponibile per questa combinazione.";
+        return `- Cerchio ${r.wheel_model} ${r.diameter}" → ${typesText}`;
+      });
+
+      const content =
+        "Dati di omologazione dal database interno per questa famiglia di vetture:\n" +
+        lines.join("\n") +
+        "\n\nInterpreta così questi dati:\n" +
+        "- Se per un certo cerchio/diametro una colonna di omologazione è vuota, significa che per quella combinazione NON è disponibile quell'omologazione.\n" +
+        "- Se la colonna contiene un valore, significa che per quella combinazione è presente quell'omologazione.\n\n" +
+        "Quando l'utente chiede quali cerchi sono omologati per la sua auto, usa queste informazioni per spiegare:\n" +
+        "- quali modelli di cerchio Fondmetal risultano omologati (e con quali tipi di omologazione),\n" +
+        "- e quali invece non hanno omologazione registrata, senza inventare nulla.";
+
+      messages.push({
+        role: "system",
+        content
+      });
+    }
+
     // Dati tecnici fitment (auto + cerchio specifico)
     if (fitmentSummary && analysis) {
       const omologazioniText = homologations.length
@@ -608,9 +692,7 @@ app.post("/chat", async (req, res) => {
     // Dati tecnici: elenco vetture per un certo cerchio (fitment_by_wheel)
     if (wheelFitmentCars && wheelFitmentCars.length && analysis.wheel) {
       const list = wheelFitmentCars
-        .map(
-          (r) => `- ${r.manufacturer_name} ${r.model_name}`
-        )
+        .map((r) => `- ${r.manufacturer_name} ${r.model_name}`)
         .join("\n");
 
       messages.push({
@@ -632,11 +714,11 @@ app.post("/chat", async (req, res) => {
         content:
           "L'utente ti sta chiedendo informazioni sui cerchi per una specifica auto (compatibilità, consigli o omologazioni), " +
           "ma non ti ha ancora dato tutti i dati necessari. " +
-          "Prima di dare qualunque risposta tecnica, fai UNA o due domande chiare per completare i dati dell'auto: " +
+          "Prima di dare qualunque risposta dettagliata, fai UNA o due domande chiare per completare i dati dell'auto: " +
           "chiedi marca, modello e soprattutto anno di immatricolazione (o generazione/serie). " +
           "Spiega in modo semplice che misure e omologazioni cambiano tra le generazioni, " +
-          "quindi hai bisogno di quei dati per essere preciso. " +
-          "Evita di rimandare subito al configuratore: guida tu la conversazione."
+          "quindi hai bisogno di quei dati per essere più preciso. " +
+          "Evita di rimandare subito al configuratore: guida tu la conversazione e intanto dai qualche indicazione generale utile."
       });
     }
 
@@ -677,7 +759,8 @@ app.post("/chat", async (req, res) => {
       fitmentUsed: !!fitmentSummary,
       wheelInfoUsed: !!wheelInfoSummary,
       carWheelOptionsUsed: !!(carWheelOptions && carWheelOptions.length),
-      wheelFitmentUsed: !!(wheelFitmentCars && wheelFitmentCars.length)
+      wheelFitmentUsed: !!(wheelFitmentCars && wheelFitmentCars.length),
+      carHomologationsUsed: !!(carHomologations && carHomologations.length)
     });
   } catch (error) {
     console.error("ERRORE /chat:", error.response?.data || error.message || error);
@@ -964,11 +1047,16 @@ app.post("/fitment", async (req, res) => {
     const row = rows[0];
     const homologations = [];
 
-    if (row.homologation_tuv) homologations.push({ type: "TUV", code: row.homologation_tuv });
-    if (row.homologation_kba) homologations.push({ type: "KBA", code: row.homologation_kba });
-    if (row.homologation_ece) homologations.push({ type: "ECE", code: row.homologation_ece });
-    if (row.homologation_jwl) homologations.push({ type: "JWL", code: row.homologation_jwl });
-    if (row.homologation_ita) homologations.push({ type: "ITA", code: row.homologation_ita });
+    if (row.homologation_tuv)
+      homologations.push({ type: "TUV", code: row.homologation_tuv });
+    if (row.homologation_kba)
+      homologations.push({ type: "KBA", code: row.homologation_kba });
+    if (row.homologation_ece)
+      homologations.push({ type: "ECE", code: row.homologation_ece });
+    if (row.homologation_jwl)
+      homologations.push({ type: "JWL", code: row.homologation_jwl });
+    if (row.homologation_ita)
+      homologations.push({ type: "ITA", code: row.homologation_ita });
 
     res.json({
       ok: true,
