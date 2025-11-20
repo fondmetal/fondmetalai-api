@@ -26,8 +26,8 @@ const OPENAI_MAIN_MODEL =
   process.env.OPENAI_MODEL || "g-67e2a78742b48191bd3173b3abbded97";
 
 // Modello per analisi intent (più leggero)
-const OPENAI_ANALYSIS_MODEL =
-  process.env.OPENAI_ANALYSIS_MODEL || "gpt-4o-mini";
+// const OPENAI_ANALYSIS_MODEL =
+//   process.env.OPENAI_ANALYSIS_MODEL || "gpt-4o-mini";
 
 const fondmetalPrompt = `
 Sei FondmetalAI, il chatbot ufficiale di Fondmetal per il nostro sito, specializzato in cerchi in lega per auto.
