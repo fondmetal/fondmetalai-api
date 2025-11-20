@@ -154,7 +154,7 @@ const chatHistory = new Map(); // userID → array di messaggi
 // =========================
 async function analyzeUserRequest(message) {
   try {
-    const completion = await openai.responses.create({
+    const completion = await openai.chat.completions.create({
       model: OPENAI_ANALYSIS_MODEL,
       temperature: 0,
       messages: [
@@ -195,7 +195,7 @@ Se l'anno è presente, deve essere un numero (es. 2019).`
       ]
     });
 
-    let raw = completion.output_text || "";
+    let raw = completion.choices[0].message.content || "";
     raw = raw.trim();
     console.log("Raw analyzeUserRequest:", raw);
 
@@ -775,13 +775,13 @@ app.post("/chat", async (req, res) => {
     // Aggiungo cronologia e messaggio utente
     messages.push(...history, { role: "user", content: userMessage });
 
-    const completion = await openai.responses.create({
+    const completion = await openai.chat.completions.create({
       model: OPENAI_MAIN_MODEL,
       messages,
       temperature: 0.7
     });
 
-    const reply = completion.output_text;
+    const reply = completion.choices[0].message.content;
 
     // Aggiorna cronologia (massimo 10 scambi)
     const updatedHistory = [
