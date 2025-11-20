@@ -156,24 +156,20 @@ async function analyzeUserRequest(message) {
   try {
     const completion = await openai.responses.create({
       model: OPENAI_ANALYSIS_MODEL, // es. "gpt-5-mini"
+
       input: [
         {
           role: "system",
           content: `
 Analizza la richiesta dell'utente e restituisci un JSON con:
 - intent
-- eventuali dati estratti (marca, modello, anno, versione, cerchio, diametro)
+- marca, modello, anno, versione, cerchio, diametro
 
-Gli intent possibili sono SOLO questi:
-- "fitment_by_car"
-- "recommendation_by_car"
-- "omologation_by_car"
-- "fitment_by_wheel"
-- "wheel_info"
-- "general_info"
-- "other"
+Intent validi:
+"fitment_by_car", "recommendation_by_car", "omologation_by_car",
+"fitment_by_wheel", "wheel_info", "general_info", "other".
 
-Rispondi SOLO con JSON puro, senza testo aggiuntivo, senza backtick.
+Rispondi SOLO con JSON puro, senza testo extra.
 Esempio:
 
 {
@@ -186,49 +182,41 @@ Esempio:
   "diameter": "...",
   "extra": null
 }
-
-Se un valore non è presente → null.
-L’anno deve essere un numero (es. 2019).
-        `
+          `
         },
         {
           role: "user",
           content: message
         }
       ],
-      reasoning: { effort: "none" },
+
+      // Modelli GPT-5-mini supportano: minimal, low, medium, high
+      reasoning: { effort: "minimal" },
       text: { verbosity: "low" }
     });
 
-    // Output in formato testo
     const raw = completion.output_text?.trim() || "";
     console.log("Raw analyzeUserRequest:", raw);
 
-    // Rimuovi eventuali ```json ... ```
+    // Rimuove eventuali ```json ... ```
     let jsonText = raw;
     const fencedMatch = raw.match(/```(?:json)?([\s\S]*?)```/i);
-    if (fencedMatch?.[1]) {
-      jsonText = fencedMatch[1].trim();
-    }
+    if (fencedMatch?.[1]) jsonText = fencedMatch[1].trim();
 
-    // Estrai oggetto { ... }
+    // Estrai oggetto {...}
     const braceMatch = jsonText.match(/\{[\s\S]*\}/);
-    if (braceMatch) {
-      jsonText = braceMatch[0];
-    }
+    if (braceMatch) jsonText = braceMatch[0];
 
     const parsed = JSON.parse(jsonText);
 
     // Normalizzazione anno
     let year = parsed.year ?? null;
-
     if (typeof year === "string") {
       const m = year.match(/(19|20)\d{2}/);
-      year = m ? parseInt(m[0], 10) : null;
+      year = m ? parseInt(m[0]) : null;
     }
-
-    if (typeof year === "number") {
-      if (year < 1950 || year > 2100) year = null;
+    if (typeof year === "number" && (year < 1950 || year > 2100)) {
+      year = null;
     }
 
     return {
