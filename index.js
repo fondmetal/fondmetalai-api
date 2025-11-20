@@ -59,6 +59,16 @@ USO DEI DATI TECNICI
   - Dai comunque una spiegazione generale dell'argomento (es. differenza tra 17" e 18", cosa significa omologazione).
   - Spiega quali informazioni ti mancano (es. anno, versione, misura dei pneumatici).
   - Solo alla fine suggerisci il configuratore 3D sul nostro sito o il contatto con un rivenditore/assistenza come passo successivo.
+- Quando ricevi le finiture dai dati tecnici, devono essere elencate esattamente così come sono scritte nel database. Non trasformarle mai in codici ID o abbreviazioni.
+
+COMUNICAZIONE COMMERCIALE
+- Sei caloroso, positivo e coinvolgente: fai complimenti per la vettura ("Ottima scelta, la BMW X5 è perfetta per i cerchi dal design sportivo").
+- Quando consigli un cerchio, aggiungi sempre una motivazione estetica o funzionale.
+- Se l’utente fornisce marca, modello e anno, devi SEMPRE proporre almeno 3–5 modelli reali compatibili presi dal database.
+- Non rimandare l’utente al sito: è già sul sito.
+- Puoi nominare il configuratore 3D solo se serve per vedere l’anteprima.
+- Le finiture devono essere indicate **con il loro nome ufficiale**.
+- Le larghezze dei canali devono essere espresse senza la “J” finale.
 
 COMPORTAMENTO PER I CASI D'USO PRINCIPALI
 
@@ -122,6 +132,7 @@ GESTIONE DEL DIALOGO
   - solo dopo, se ancora non è possibile essere specifici, suggerisci il configuratore o il contatto diretto.
 - Non fare mai domande inutili: concentrati su quelli che servono davvero (marca, modello, anno, uso, cerchio, dimensioni).
 - Ogni volta che cambi argomento (es. da compatibilità a consigli estetici), chiarisci cosa stai facendo.
+- NON devi mai dire “visita il nostro sito” o “guarda sul nostro sito”: l’utente è già sul sito. Se serve, puoi dire “nel configuratore puoi visualizzare l’anteprima”.NON devi mai dire “visita il nostro sito” o “guarda sul nostro sito”: l’utente è già sul sito. Se serve, puoi dire “nel configuratore puoi visualizzare l’anteprima”.
 
 LIMITI E ONESTÀ
 - Non inventare mai dati tecnici (misure, omologazioni, codici, pesi, carichi, ecc.).
@@ -294,6 +305,11 @@ async function getFitmentData(carVersionId, wheelAmId) {
     "SELECT * FROM applications WHERE car = ? AND am_wheel = ? LIMIT 1",
     [carVersionId, wheelAmId]
   );
+  if (rows.length) {
+    if (rows[0].channel) {
+      rows[0].channel = String(rows[0].channel).replace(/J$/i, "");
+    }
+  }
   return rows.length ? rows[0] : null;
 }
 
@@ -624,6 +640,27 @@ app.post("/chat", async (req, res) => {
           "puoi usare questi modelli come base per i tuoi suggerimenti. " +
           "Spiega sempre che si tratta di modelli compatibili secondo i nostri dati tecnici, " +
           "ma che per la conferma finale di misure e omologazioni è comunque necessario verificare il singolo allestimento."
+      });
+    }
+    
+    // NUOVO: risposta commerciale pronta quando abbiamo almeno marca + modello (+ anno opzionale)
+    if (
+      isCarFitmentIntent &&
+      !needMoreCarData &&
+      carWheelOptions &&
+      carWheelOptions.length &&
+      !fitmentSummary // cioè non stiamo cercando versione + diametro
+    ) {
+      const list = carWheelOptions
+        .slice(0, 6)
+        .map((r) => `- ${r.model_name} (${r.max_diameter}")`)
+        .join("\n");
+
+      messages.push({
+        role: "system",
+        content:
+          "Per questa auto hai già a disposizione una lista di cerchi compatibili dal database Fondmetal.\n" +
+          "Elenca almeno 3 modelli tra questi, con un tono commerciale e cordiale, spiegando brevemente lo stile di ciascun cerchio."
       });
     }
 
