@@ -21,13 +21,13 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-// Modello principale del bot (GPT personalizzato FondmetalAI, con fallback)
+// Modello principale del bot (GPT personalizzato FondmetalAI)
 const OPENAI_MAIN_MODEL =
-  process.env.OPENAI_MODEL || "g-67e2a78742b48191bd3173b3abbded97";
+  process.env.OPENAI_MAIN_MODEL || "g-67e2a78742b48191bd3173b3abbded97";
 
 // Modello per analisi intent (più leggero)
-// const OPENAI_ANALYSIS_MODEL =
-//   process.env.OPENAI_ANALYSIS_MODEL || "gpt-4o-mini";
+const OPENAI_ANALYSIS_MODEL =
+  process.env.OPENAI_ANALYSIS_MODEL || "gpt-5-mini";
 
 const fondmetalPrompt = `
 Sei FondmetalAI, il chatbot ufficiale di Fondmetal per il nostro sito, specializzato in cerchi in lega per auto.
@@ -775,13 +775,14 @@ app.post("/chat", async (req, res) => {
     // Aggiungo cronologia e messaggio utente
     messages.push(...history, { role: "user", content: userMessage });
 
-    const completion = await openai.chat.completions.create({
+    const completion = await openai.responses.create({
       model: OPENAI_MAIN_MODEL,
-      messages,
-      temperature: 0.7
+      input: messages,
+      reasoning: { effort: "none" },
+      text: { verbosity: "medium" }
     });
 
-    const reply = completion.choices[0].message.content;
+    const reply = completion.output_text;
 
     // Aggiorna cronologia (massimo 10 scambi)
     const updatedHistory = [
