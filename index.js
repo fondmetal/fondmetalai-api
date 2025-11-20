@@ -154,27 +154,27 @@ const chatHistory = new Map(); // userID → array di messaggi
 // =========================
 async function analyzeUserRequest(message) {
   try {
-    const completion = await openai.chat.completions.create({
-      model: OPENAI_ANALYSIS_MODEL,
-      temperature: 0,
-      messages: [
+    const completion = await openai.responses.create({
+      model: OPENAI_ANALYSIS_MODEL, // es. "gpt-5-mini"
+      input: [
         {
           role: "system",
           content: `
-Analizza la richiesta dell'utente e restituisci:
-- che tipo di richiesta è (intent)
-- eventuali dati estratti (marca, modello, anno, versione, cerchio, diametro).
+Analizza la richiesta dell'utente e restituisci un JSON con:
+- intent
+- eventuali dati estratti (marca, modello, anno, versione, cerchio, diametro)
 
 Gli intent possibili sono SOLO questi:
-- "fitment_by_car"        → "quali cerchi montano sulla mia auto", "che cerchi posso montare su..."
-- "recommendation_by_car" → "che cerchi mi consigli per la mia auto"
-- "omologation_by_car"    → "quali cerchi sono omologati per la mia auto"
-- "fitment_by_wheel"      → "su quali auto posso montare questi cerchi"
-- "wheel_info"            → info generali su un modello di cerchio (finiture, diametri, ecc.)
-- "general_info"          → domande teoriche (cos'è ET, differenza tra canale, ecc.)
-- "other"                 → tutto il resto.
+- "fitment_by_car"
+- "recommendation_by_car"
+- "omologation_by_car"
+- "fitment_by_wheel"
+- "wheel_info"
+- "general_info"
+- "other"
 
-Formato di risposta (SOLO JSON, niente testo extra, niente backtick):
+Rispondi SOLO con JSON puro, senza testo aggiuntivo, senza backtick.
+Esempio:
 
 {
   "intent": "...",
@@ -187,25 +187,31 @@ Formato di risposta (SOLO JSON, niente testo extra, niente backtick):
   "extra": null
 }
 
-Se un valore non è presente, mettilo a null.
-Se non hai idea dell'intent, usa "other".
-Se l'anno è presente, deve essere un numero (es. 2019).`
+Se un valore non è presente → null.
+L’anno deve essere un numero (es. 2019).
+        `
         },
-        { role: "user", content: message }
-      ]
+        {
+          role: "user",
+          content: message
+        }
+      ],
+      reasoning: { effort: "none" },
+      text: { verbosity: "low" }
     });
 
-    let raw = completion.choices[0].message.content || "";
-    raw = raw.trim();
+    // Output in formato testo
+    const raw = completion.output_text?.trim() || "";
     console.log("Raw analyzeUserRequest:", raw);
 
-    // Gestione di eventuali ```json ... ```
+    // Rimuovi eventuali ```json ... ```
     let jsonText = raw;
     const fencedMatch = raw.match(/```(?:json)?([\s\S]*?)```/i);
-    if (fencedMatch && fencedMatch[1]) {
+    if (fencedMatch?.[1]) {
       jsonText = fencedMatch[1].trim();
     }
 
+    // Estrai oggetto { ... }
     const braceMatch = jsonText.match(/\{[\s\S]*\}/);
     if (braceMatch) {
       jsonText = braceMatch[0];
@@ -213,26 +219,29 @@ Se l'anno è presente, deve essere un numero (es. 2019).`
 
     const parsed = JSON.parse(jsonText);
 
-    // Normalizzo anno
+    // Normalizzazione anno
     let year = parsed.year ?? null;
+
     if (typeof year === "string") {
       const m = year.match(/(19|20)\d{2}/);
       year = m ? parseInt(m[0], 10) : null;
     }
-    if (typeof year === "number" && (year < 1950 || year > 2100)) {
-      year = null;
+
+    if (typeof year === "number") {
+      if (year < 1950 || year > 2100) year = null;
     }
 
     return {
       intent: parsed.intent ?? "other",
       brand: parsed.brand ?? null,
       model: parsed.model ?? null,
-      year: year ?? null,
+      year,
       version: parsed.version ?? null,
       wheel: parsed.wheel ?? null,
       diameter: parsed.diameter ?? null,
       extra: parsed.extra ?? null
     };
+
   } catch (err) {
     console.error("Errore analyzeUserRequest:", err);
     return null;
