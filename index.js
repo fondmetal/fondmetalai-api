@@ -149,6 +149,8 @@ LINGUA
 
 // Memoria persistente della sessione (dati estratti)
 const userContext = new Map(); 
+// Memoria cronologia conversazione per ogni utente
+const chatHistory = new Map(); // userId → array di messaggi
 // userContext[userId] = { brand, model, year, version, wheel, diameter }
 
 // =========================
