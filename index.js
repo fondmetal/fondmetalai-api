@@ -147,7 +147,9 @@ LINGUA
 - Mantieni sempre un tono coerente: tecnico ma comprensibile, cortese, sicuro quando hai i dati, prudente quando non li hai.
 `;
 
-const chatHistory = new Map(); // userID → array di messaggi
+// Memoria persistente della sessione (dati estratti)
+const userContext = new Map(); 
+// userContext[userId] = { brand, model, year, version, wheel, diameter }
 
 // =========================
 // ANALISI RICHIESTA (INTENT + PARAMETRI)
@@ -311,7 +313,7 @@ async function getWheelBasicInfo(wheelName) {
      FROM am_wheel_models m
      JOIN am_wheels w ON w.model = m.id
      JOIN am_wheel_versions v ON v.am_wheel = w.id
-     WHERE m.model ?
+     WHERE m.model LIKE ?
      GROUP BY m.id
      LIMIT 1`,
     [`%${wheelName}%`]
@@ -438,6 +440,18 @@ app.post("/chat", async (req, res) => {
 
     // Analisi richiesta (intent + parametri)
     let analysis = await analyzeUserRequest(messageForAnalysis);
+    // --- SALVATAGGIO CONTEXT DINAMICO ---
+    let ctx = userContext.get(userId) || {};
+
+    if (analysis.brand) ctx.brand = analysis.brand;
+    if (analysis.model) ctx.model = analysis.model;
+    if (analysis.year) ctx.year = analysis.year;
+    if (analysis.version) ctx.version = analysis.version;
+
+    if (analysis.wheel) ctx.wheel = analysis.wheel;
+    if (analysis.diameter) ctx.diameter = analysis.diameter;
+
+    userContext.set(userId, ctx);
     if (!analysis) {
       analysis = { intent: "other" };
     }
@@ -601,7 +615,31 @@ app.post("/chat", async (req, res) => {
       }
     }
 
-    const messages = [{ role: "system", content: fondmetalPrompt }];
+    const messages = [
+      { role: "system", content: fondmetalPrompt },
+      {
+        role: "system",
+        content: `
+    CONTESTO UTENTE ATTUALE:
+
+    Auto:
+    - Marca: ${ctx.brand || "non specificata"}
+    - Modello: ${ctx.model || "non specificato"}
+    - Anno: ${ctx.year || "non specificato"}
+    - Versione: ${ctx.version || "non specificata"}
+
+    Cerchio richiesto:
+    - Modello: ${ctx.wheel || "non specificato"}
+    - Diametro: ${ctx.diameter || "non specificato"}
+
+    REGOLE:
+    - Se l’utente parla usando follow-up brevi ("sportivi", "19 pollici", "nera", ecc.), interpreta SEMPRE in relazione al contesto precedente.
+    - NON chiedere MAI informazioni già presenti sopra, a meno che l’utente non le contraddica.
+    - Se l’utente aggiunge informazioni nuove, integrale nel contesto.
+    - L’auto ha SEMPRE la precedenza: prima i dati auto → poi i cerchi → poi le preferenze.
+        `
+      }
+    ];
 
     // Dati tecnici ruota (wheel_info)
     if (wheelInfoSummary) {
