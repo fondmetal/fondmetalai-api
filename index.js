@@ -410,20 +410,30 @@ app.post("/chat", async (req, res) => {
     // Recupero cronologia PRIMA dell'analisi, così posso usarla per i follow-up (es. "2022")
     const history = chatHistory.get(userId) || [];
 
-    // Costruisco un messaggio di analisi che tiene conto dei follow-up brevi
+    // Preparazione messaggio per l’analisi INTENT
     let messageForAnalysis = userMessage;
-    const trimmed = userMessage.trim();
 
-    // Se il messaggio è tipo "2022", "si", "no" (poche cifre, niente lettere),
-    // lo attacco all'ultima domanda utente precedente.
-    if (trimmed.length < 6 && !/[a-zA-Z]/.test(trimmed)) {
-      const lastUser = [...history].reverse().find((m) => m.role === "user");
-      if (lastUser) {
-        messageForAnalysis =
-          lastUser.content +
-          "\n\nRisposta aggiuntiva dell'utente (follow-up): " +
-          userMessage;
-      }
+    // Recupero ultimo messaggio utente “completo” (con marca/modello/anno se già forniti)
+    const lastFullUser = [...history]
+      .reverse()
+      .find((m) => m.role === "user" && m.content.length > 10);
+
+    // Se esiste un contesto precedente, lo includiamo sempre nell’analisi
+    if (lastFullUser && lastFullUser !== userMessage) {
+      messageForAnalysis =
+        "Contesto precedente dell'utente:\n" +
+        lastFullUser.content +
+        "\n\nNuovo messaggio dell'utente:\n" +
+        userMessage;
+    }
+
+    // Gestione follow-up brevi tipo “2022”, “si”, “no”
+    const trimmed = userMessage.trim();
+    if (trimmed.length < 6 && !/[a-zA-Z]/.test(trimmed) && lastFullUser) {
+      messageForAnalysis =
+        lastFullUser.content +
+        "\n\nRisposta aggiuntiva dell'utente (follow-up): " +
+        userMessage;
     }
 
     // Analisi richiesta (intent + parametri)
