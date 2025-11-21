@@ -18,16 +18,16 @@ app.use(express.json());
 // OPENAI CLIENT
 // =========================
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Modello principale del bot (GPT personalizzato FondmetalAI)
+// Modello principale GPT-4o
 const OPENAI_MAIN_MODEL =
-  process.env.OPENAI_MAIN_MODEL || "g-67e2a78742b48191bd3173b3abbded97";
+  process.env.OPENAI_MAIN_MODEL || "gpt-4o";
 
-// Modello per analisi intent (più leggero)
+// Modello analisi (sempre GPT-4o)
 const OPENAI_ANALYSIS_MODEL =
-  process.env.OPENAI_ANALYSIS_MODEL || "gpt-5-mini";
+  process.env.OPENAI_ANALYSIS_MODEL || "gpt-4o-mini";
 
 const fondmetalPrompt = `
 Sei FondmetalAI, il chatbot ufficiale di Fondmetal per il nostro sito, specializzato in cerchi in lega per auto.
@@ -64,7 +64,7 @@ USO DEI DATI TECNICI
 COMUNICAZIONE COMMERCIALE
 - Sei caloroso, positivo e coinvolgente: fai complimenti per la vettura ("Ottima scelta, la BMW X5 è perfetta per i cerchi dal design sportivo").
 - Quando consigli un cerchio, aggiungi sempre una motivazione estetica o funzionale.
-- Se l’utente fornisce marca, modello e anno, devi SEMPRE proporre almeno 3–5 modelli reali compatibili presi dal database.
+- Se l’utente fornisce marca, modello e anno, devi SEMPRE proporre almeno 3, 4 o 5 modelli reali compatibili presi dal database.
 - Non rimandare l’utente al sito: è già sul sito.
 - Puoi nominare il configuratore 3D solo se serve per vedere l’anteprima.
 - Le finiture devono essere indicate **con il loro nome ufficiale**.
@@ -90,12 +90,12 @@ COMPORTAMENTO PER I CASI D'USO PRINCIPALI
    - Consiglia i modelli più recenti prima.
    - Quando fai una proposta, spiega in modo sintetico:
      - perché quel modello di cerchio è adatto (stile, uso, dimensioni),
-     - in che diametri/finiture è disponibile (solo se queste informazioni sono presenti nei dati o chiaramente sul sito).
-   - Non consigliare mai cerchi non presenti nel catalogo Fondmetal.
+     - in che diametri/finiture è disponibile (queste informazioni prendile solo ed esclusivamente dalle pagine del sito).
+   - Non consigliare mai cerchi non presenti nel catalogo Fondmetal o sul sito Fondmetal.
 
 3) L'utente vuole sapere quali cerchi sono omologati per la sua auto.
    - Raccogli sempre prima i dati di identificazione della vettura (marca, modello, anno).
-   - Se nei dati tecnici strutturati ci sono informazioni di omologazione (ECE, TUV, KBA, JWL, ITA):
+   - Se nei dati tecnici strutturati ci sono informazioni di omologazione (ECE, TUV, KBA, JWL, NAD):
      - Elenca chiaramente i tipi di omologazione disponibili per i cerchi associati a questa famiglia di vetture.
      - Spiega in modo semplice che, se una colonna di omologazione nel database è vuota, significa che per quella combinazione non è disponibile quell'omologazione.
    - Se NON hai dati strutturati sulla omologazione per quella combinazione:
@@ -154,10 +154,9 @@ const chatHistory = new Map(); // userID → array di messaggi
 // =========================
 async function analyzeUserRequest(message) {
   try {
-    const completion = await openai.responses.create({
-      model: OPENAI_ANALYSIS_MODEL, // es. "gpt-5-mini"
-
-      input: [
+    const completion = await openai.chat.completions.create({
+      model: OPENAI_ANALYSIS_MODEL,
+      messages: [
         {
           role: "system",
           content: `
@@ -182,38 +181,30 @@ Esempio:
   "diameter": "...",
   "extra": null
 }
-          `
+          `,
         },
-        {
-          role: "user",
-          content: message
-        }
+        { role: "user", content: message },
       ],
-
-      // Modelli GPT-5-mini supportano: minimal, low, medium, high
-      reasoning: { effort: "minimal" },
-      text: { verbosity: "low" }
+      temperature: 0,
     });
 
-    const raw = completion.output_text?.trim() || "";
+    const raw = completion.choices[0]?.message?.content?.trim() || "";
     console.log("Raw analyzeUserRequest:", raw);
 
-    // Rimuove eventuali ```json ... ```
     let jsonText = raw;
+
     const fencedMatch = raw.match(/```(?:json)?([\s\S]*?)```/i);
     if (fencedMatch?.[1]) jsonText = fencedMatch[1].trim();
 
-    // Estrai oggetto {...}
     const braceMatch = jsonText.match(/\{[\s\S]*\}/);
     if (braceMatch) jsonText = braceMatch[0];
 
     const parsed = JSON.parse(jsonText);
 
-    // Normalizzazione anno
     let year = parsed.year ?? null;
     if (typeof year === "string") {
       const m = year.match(/(19|20)\d{2}/);
-      year = m ? parseInt(m[0]) : null;
+      year = m ? parseInt(m[0], 10) : null;
     }
     if (typeof year === "number" && (year < 1950 || year > 2100)) {
       year = null;
@@ -227,9 +218,8 @@ Esempio:
       version: parsed.version ?? null,
       wheel: parsed.wheel ?? null,
       diameter: parsed.diameter ?? null,
-      extra: parsed.extra ?? null
+      extra: parsed.extra ?? null,
     };
-
   } catch (err) {
     console.error("Errore analyzeUserRequest:", err);
     return null;
@@ -280,7 +270,7 @@ async function findWheelModelId(modelName) {
 async function findWheelVersionId(wheelModelId, diameter) {
   const dia =
     typeof diameter === "string"
-      ? parseInt((diameter.match(/(\d{2})/) || [])[1], 10)
+      ? parseInt(String(diameter).replace(/\D+/g, ""), 10)
       : Number(diameter);
 
   if (!dia || Number.isNaN(dia)) return null;
@@ -321,7 +311,7 @@ async function getWheelBasicInfo(wheelName) {
      FROM am_wheel_models m
      JOIN am_wheels w ON w.model = m.id
      JOIN am_wheel_versions v ON v.am_wheel = w.id
-     WHERE m.model LIKE ?
+     WHERE m.model ?
      GROUP BY m.id
      LIMIT 1`,
     [`%${wheelName}%`]
@@ -355,7 +345,7 @@ async function getWheelModelsForCarModel(modelId) {
 async function getCarsForWheel(wheelName, diameter) {
   const dia =
     typeof diameter === "string"
-      ? parseInt((diameter.match(/(\d{2})/) || [])[1], 10)
+      ? parseInt(String(diameter).replace(/\D+/g, ""), 10)
       : Number(diameter);
 
   if (!dia || Number.isNaN(dia)) return [];
@@ -491,7 +481,11 @@ app.post("/chat", async (req, res) => {
 
     if (isCarFitmentIntent) {
       // Se manca qualcosa dell'auto → segnalalo al modello (per fare domande, non per bloccare il DB)
-      if (!analysis.brand || !analysis.model || (!analysis.year && !analysis.version)) {
+      if (
+        !analysis.brand ||
+        !analysis.model ||
+        (!analysis.year && !analysis.version)
+      ) {
         needMoreCarData = true;
       }
 
@@ -557,27 +551,27 @@ app.post("/chat", async (req, res) => {
             if (fitmentRow.homologation_tuv)
               homologations.push({
                 type: "TUV",
-                code: fitmentRow.homologation_tuv
+                code: fitmentRow.homologation_tuv,
               });
             if (fitmentRow.homologation_kba)
               homologations.push({
                 type: "KBA",
-                code: fitmentRow.homologation_kba
+                code: fitmentRow.homologation_kba,
               });
             if (fitmentRow.homologation_ece)
               homologations.push({
                 type: "ECE",
-                code: fitmentRow.homologation_ece
+                code: fitmentRow.homologation_ece,
               });
             if (fitmentRow.homologation_jwl)
               homologations.push({
                 type: "JWL",
-                code: fitmentRow.homologation_jwl
+                code: fitmentRow.homologation_jwl,
               });
             if (fitmentRow.homologation_ita)
               homologations.push({
                 type: "ITA",
-                code: fitmentRow.homologation_ita
+                code: fitmentRow.homologation_ita,
               });
 
             fitmentSummary = {
@@ -588,7 +582,7 @@ app.post("/chat", async (req, res) => {
               limitation: fitmentRow.limitation,
               limitation_IT: fitmentRow.limitation_IT,
               plug_play: !!fitmentRow.plug_play,
-              homologations
+              homologations,
             };
           }
         } catch (e) {
@@ -613,7 +607,7 @@ app.post("/chat", async (req, res) => {
             wheelInfoSummary.finishes || "non indicate"
           }\n\n` +
           "Quando l'utente chiede informazioni su questo modello di cerchio, usa questi dati per rispondere " +
-          "e non inventare nuove finiture o diametri."
+          "e non inventare nuove finiture o diametri.",
       });
     }
 
@@ -636,10 +630,10 @@ app.post("/chat", async (req, res) => {
           "\n\nQuando l'utente ti chiede che cerchi consigli/gli montano sulla sua auto, " +
           "puoi usare questi modelli come base per i tuoi suggerimenti. " +
           "Spiega sempre che si tratta di modelli compatibili secondo i nostri dati tecnici, " +
-          "ma che per la conferma finale di misure e omologazioni è comunque necessario verificare il singolo allestimento."
+          "ma che per la conferma finale di misure e omologazioni è comunque necessario verificare il singolo allestimento.",
       });
     }
-    
+
     // NUOVO: risposta commerciale pronta quando abbiamo almeno marca + modello (+ anno opzionale)
     if (
       isCarFitmentIntent &&
@@ -657,7 +651,7 @@ app.post("/chat", async (req, res) => {
         role: "system",
         content:
           "Per questa auto hai già a disposizione una lista di cerchi compatibili dal database Fondmetal.\n" +
-          "Elenca almeno 3 modelli tra questi, con un tono commerciale e cordiale, spiegando brevemente lo stile di ciascun cerchio."
+          "Elenca almeno 3 modelli tra questi, con un tono commerciale e cordiale, spiegando brevemente lo stile di ciascun cerchio.",
       });
     }
 
@@ -688,7 +682,7 @@ app.post("/chat", async (req, res) => {
 
       messages.push({
         role: "system",
-        content
+        content,
       });
     }
 
@@ -719,7 +713,7 @@ app.post("/chat", async (req, res) => {
           }\n` +
           `- Omologazioni: ${omologazioniText}\n\n` +
           "Quando rispondi su questa combinazione specifica auto-cerchio devi basarti su questi dati e non inventare nulla. " +
-          "Se l'utente parla di un'altra auto o di un altro cerchio per cui non hai dati dal database, spiegalo chiaramente e chiedi maggiori dettagli."
+          "Se l'utente parla di un'altra auto o di un altro cerchio per cui non hai dati dal database, spiegalo chiaramente e chiedi maggiori dettagli.",
       });
     }
 
@@ -737,7 +731,7 @@ app.post("/chat", async (req, res) => {
           "\n\nQuando l'utente ti chiede su quali auto può montare questo cerchio, " +
           "usa questo elenco per spiegare i principali modelli compatibili. " +
           "Non è necessario elencare ogni singola versione: puoi raggruppare per marca e modello, " +
-          "ricordando sempre che per la conferma finale servono i dettagli della singola vettura."
+          "ricordando sempre che per la conferma finale servono i dettagli della singola vettura.",
       });
     }
 
@@ -752,7 +746,7 @@ app.post("/chat", async (req, res) => {
           "chiedi marca, modello e soprattutto anno di immatricolazione (o generazione/serie). " +
           "Spiega in modo semplice che misure e omologazioni cambiano tra le generazioni, " +
           "quindi hai bisogno di quei dati per essere più preciso. " +
-          "Evita di rimandare subito al configuratore: guida tu la conversazione e intanto dai qualche indicazione generale utile."
+          "Evita di rimandare subito al configuratore: guida tu la conversazione e intanto dai qualche indicazione generale utile.",
       });
     }
 
@@ -765,27 +759,26 @@ app.post("/chat", async (req, res) => {
           "ma non ti ha ancora indicato chiaramente modello del cerchio e diametro. " +
           "Prima di dare qualsiasi informazione tecnica, chiedi all'utente almeno: " +
           "nome del modello di cerchio Fondmetal e diametro (es. 18, 19, 20). " +
-          "Spiega che compatibilità e omologazioni cambiano molto in base al diametro."
+          "Spiega che compatibilità e omologazioni cambiano molto in base al diametro.",
       });
     }
 
     // Aggiungo cronologia e messaggio utente
-    messages.push(...history, { role: "user", content: userMessage });
+    messages.push({ role: "user", content: userMessage });
 
-    const completion = await openai.responses.create({
+    const completion = await openai.chat.completions.create({
       model: OPENAI_MAIN_MODEL,
-      input: messages,
-      reasoning: { effort: "none" },
-      text: { verbosity: "medium" }
+      messages,
+      temperature: 0.4,
     });
 
-    const reply = completion.output_text;
+    const reply = completion.choices[0].message.content;
 
     // Aggiorna cronologia (massimo 10 scambi)
     const updatedHistory = [
       ...history,
       { role: "user", content: userMessage },
-      { role: "assistant", content: reply }
+      { role: "assistant", content: reply },
     ].slice(-10);
     chatHistory.set(userId, updatedHistory);
 
@@ -795,10 +788,13 @@ app.post("/chat", async (req, res) => {
       wheelInfoUsed: !!wheelInfoSummary,
       carWheelOptionsUsed: !!(carWheelOptions && carWheelOptions.length),
       wheelFitmentUsed: !!(wheelFitmentCars && wheelFitmentCars.length),
-      carHomologationsUsed: !!(carHomologations && carHomologations.length)
+      carHomologationsUsed: !!(carHomologations && carHomologations.length),
     });
   } catch (error) {
-    console.error("ERRORE /chat:", error.response?.data || error.message || error);
+    console.error(
+      "ERRORE /chat:",
+      error.response?.data || error.message || error
+    );
     res.status(500).json({ error: "Errore nella generazione della risposta." });
   }
 });
@@ -863,7 +859,7 @@ app.get("/tcp-check", async (req, res) => {
       host,
       port: dbPort,
       publicIP,
-      timestamp: startTime
+      timestamp: startTime,
     });
   });
 
@@ -875,7 +871,7 @@ app.get("/tcp-check", async (req, res) => {
       host,
       port: dbPort,
       publicIP,
-      timestamp: startTime
+      timestamp: startTime,
     });
   });
 
@@ -886,7 +882,7 @@ app.get("/tcp-check", async (req, res) => {
       host,
       port: dbPort,
       publicIP,
-      timestamp: startTime
+      timestamp: startTime,
     });
   });
 
@@ -899,7 +895,7 @@ app.get("/tcp-check", async (req, res) => {
       host,
       port: dbPort,
       publicIP,
-      timestamp: startTime
+      timestamp: startTime,
     });
   }
 });
@@ -935,7 +931,8 @@ app.get("/fitment-debug", async (req, res) => {
     if (!carId || !wheelId) {
       return res.status(400).json({
         ok: false,
-        error: "Parametri mancanti. Usa /fitment-debug?car=ID_CAR&wheel=ID_WHEEL"
+        error:
+          "Parametri mancanti. Usa /fitment-debug?car=ID_CAR&wheel=ID_WHEEL",
       });
     }
 
@@ -968,7 +965,7 @@ app.get("/fitment-debug", async (req, res) => {
         ok: false,
         error: "Nessuna combinazione trovata per questi ID",
         carId,
-        wheelId
+        wheelId,
       });
     }
 
@@ -981,7 +978,7 @@ app.get("/fitment-debug", async (req, res) => {
         type: "TUV",
         code: row.homologation_tuv,
         doc: row.homologation_tuv_doc || null,
-        note: row.note_tuv || null
+        note: row.note_tuv || null,
       });
     }
     if (row.homologation_kba) {
@@ -989,7 +986,7 @@ app.get("/fitment-debug", async (req, res) => {
         type: "KBA",
         code: row.homologation_kba,
         doc: row.homologation_kba_doc || null,
-        note: row.note_kba || null
+        note: row.note_kba || null,
       });
     }
     if (row.homologation_ece) {
@@ -997,7 +994,7 @@ app.get("/fitment-debug", async (req, res) => {
         type: "ECE",
         code: row.homologation_ece,
         doc: row.homologation_ece_doc || null,
-        note: row.note_ece || null
+        note: row.note_ece || null,
       });
     }
     if (row.homologation_jwl) {
@@ -1005,7 +1002,7 @@ app.get("/fitment-debug", async (req, res) => {
         type: "JWL",
         code: row.homologation_jwl,
         doc: row.homologation_jwl_doc || null,
-        note: null
+        note: null,
       });
     }
     if (row.homologation_ita) {
@@ -1013,7 +1010,7 @@ app.get("/fitment-debug", async (req, res) => {
         type: "ITA",
         code: row.homologation_ita,
         doc: row.homologation_ita_doc || null,
-        note: row.note_ita || null
+        note: row.note_ita || null,
       });
     }
 
@@ -1026,10 +1023,10 @@ app.get("/fitment-debug", async (req, res) => {
         fitment_advice: row.fitment_advice,
         limitation: row.limitation,
         limitation_IT: row.limitation_IT,
-        plug_play: !!row.plug_play
+        plug_play: !!row.plug_play,
       },
       homologations: homologationsDbg,
-      raw: row
+      raw: row,
     });
   } catch (err) {
     console.error("[DB] /fitment-debug error:", err);
@@ -1044,7 +1041,7 @@ app.post("/fitment", async (req, res) => {
     if (!carId || !wheelId) {
       return res.status(400).json({
         ok: false,
-        error: "Parametri mancanti. Devi inviare carId e wheelId."
+        error: "Parametri mancanti. Devi inviare carId e wheelId.",
       });
     }
 
@@ -1075,7 +1072,7 @@ app.post("/fitment", async (req, res) => {
         ok: false,
         error: "Nessuna combinazione trovata",
         carId,
-        wheelId
+        wheelId,
       });
     }
 
@@ -1102,15 +1099,15 @@ app.post("/fitment", async (req, res) => {
         advice: row.fitment_advice,
         limitation: row.limitation,
         limitation_IT: row.limitation_IT,
-        plugAndPlay: !!row.plug_play
+        plugAndPlay: !!row.plug_play,
       },
-      homologations
+      homologations,
     });
   } catch (err) {
     console.error("[DB] /fitment error:", err);
     res.status(500).json({
       ok: false,
-      error: String(err?.message || err)
+      error: String(err?.message || err),
     });
   }
 });
