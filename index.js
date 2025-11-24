@@ -341,23 +341,24 @@ async function getWheelBasicInfo(wheelName) {
 }
 
 async function getWheelModelsForCarModel(modelId) {
-  const [rows] = await pool.query(
-    `SELECT 
-       m.id   AS model_id,
-       m.model AS model_name,
-       MAX(w.diameter) AS max_diameter,
-       MAX(w.updated_at) AS last_update
-     FROM car_versions cv
-     JOIN applications a ON a.car = cv.id
-     JOIN am_wheels w    ON a.am_wheel = w.id AND w.status = 'ACTIVE'
-     JOIN am_wheel_models m ON w.model = m.id
-     WHERE cv.car = ?
-       AND w.status = 'ACTIVE'
-     GROUP BY m.id, m.model
-     ORDER BY last_update DESC, max_diameter DESC
-     LIMIT 12`,
-    [modelId]
-  );
+  const rows = await loggedQuery(`
+    SELECT DISTINCT
+      m.id AS model_id,
+      m.model AS model_name,
+      MAX(w.diameter) AS max_diameter
+    FROM applications a
+    JOIN am_wheels w ON a.am_wheel = w.id AND w.status = 'ACTIVE'
+    JOIN am_wheel_models m ON w.model = m.id
+    WHERE EXISTS (
+      SELECT 1 FROM car_versions cv 
+      WHERE cv.id = a.car AND cv.car = ?
+    )
+    GROUP BY m.id, m.model
+    ORDER BY MAX(w.diameter) DESC
+    LIMIT 15
+  `, [modelId]);
+
+  debugLog('getWheelModelsForCarModel FIXATO → trovati', rows.length, 'cerchi per modelId', modelId);
   return rows;
 }
 
