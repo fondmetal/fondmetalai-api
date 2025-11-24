@@ -417,31 +417,31 @@ async function getHomologationsByCarModel(modelId) {
 // CHATBOT /chat
 // ===================================================
 app.post("/chat", async (req, res) => {
+  const startTime = Date.now();
+  const log = (...args) => console.log(`\x1b[36m[DEBUG ${new Date().toISOString()}] \x1b[0m`, ...args);
+
   try {
-    const userMessage = req.body.message;
+    const userMessage = req.body.message?.trim();
     const userId = req.body.userId || "default";
 
-    if (!userMessage || userMessage.trim() === "") {
+    log("NUOVA RICHIESTA /chat");
+    log("userId:", userId);
+    log("Messaggio utente:", userMessage);
+
+    if (!userMessage) {
       return res.status(400).json({ error: "Messaggio vuoto." });
     }
 
-    // Cronologia conversazione e contesto strutturato già noto
+    // Contesto e cronologia
     const history = chatHistory.get(userId) || [];
     const ctxBefore = userContext.get(userId) || {};
+    log("Contesto precedente:", ctxBefore);
 
-    // Costruzione del messaggio per l'analisi dell'intent
+    // === COSTRUZIONE MESSAGGIO PER ANALISI INTENT ===
     let messageForAnalysis = userMessage;
-    const trimmed = userMessage.trim();
-
-    const hasCarCtx = !!(
-      ctxBefore.brand ||
-      ctxBefore.model ||
-      ctxBefore.year ||
-      ctxBefore.version
-    );
+    const hasCarCtx = !!(ctxBefore.brand || ctxBefore.model || ctxBefore.year || ctxBefore.version);
     const hasWheelCtx = !!(ctxBefore.wheel || ctxBefore.diameter);
 
-    // Se abbiamo già una vettura/cerchio nel contesto, lo comunichiamo al modello di analisi
     if (hasCarCtx || hasWheelCtx) {
       messageForAnalysis =
         "Dati già noti sull'auto e sui cerchi (non chiederli di nuovo se non vengono cambiati esplicitamente):\n" +
@@ -456,60 +456,39 @@ app.post("/chat", async (req, res) => {
         userMessage;
     }
 
-    // Individuo l'ultimo messaggio utente “lungo” per gestire follow-up brevi
-    const lastLongUser = [...history]
-      .reverse()
-      .find((m) => m.role === "user" && m.content && m.content.length > 20);
-
-    // Follow-up tipo "2022", "si", "no" (pochi caratteri, niente lettere)
-    if (trimmed.length < 6 && !/[a-zA-Z]/.test(trimmed) && lastLongUser) {
-      const ctxHeader =
-        hasCarCtx || hasWheelCtx
-          ? "Dati già noti sull'auto e sui cerchi (non chiederli di nuovo se non vengono cambiati esplicitamente):\n" +
-            `- Marca: ${ctxBefore.brand || "non specificata"}\n` +
-            `- Modello: ${ctxBefore.model || "non specificato"}\n` +
-            `- Anno: ${ctxBefore.year || "non specificato"}\n` +
-            `- Versione: ${ctxBefore.version || "non specificata"}\n\n` +
-            "Cerchio richiesto:\n" +
-            `- Modello: ${ctxBefore.wheel || "non specificato"}\n` +
-            `- Diametro: ${ctxBefore.diameter || "non specificato"}\n\n`
-          : "";
-
-      messageForAnalysis =
-        ctxHeader +
-        "Ultimo messaggio completo dell'utente:\n" +
-        lastLongUser.content +
-        "\n\nRisposta aggiuntiva dell'utente (follow-up): " +
-        userMessage;
+    const lastLongUser = [...history].reverse().find(m => m.role === "user" && m.content?.length > 20);
+    if (userMessage.length < 6 && !/[a-zA-Z]/.test(userMessage) && lastLongUser) {
+      const header = hasCarCtx || hasWheelCtx ? `Dati già noti:\nMarca: ${ctxBefore.brand || "-"}\nModello: ${ctxBefore.model || "-"}\nAnno: ${ctxBefore.year || "-"}\n` : "";
+      messageForAnalysis = `${header}Ultimo messaggio lungo:\n${lastLongUser.content}\n\nFollow-up breve: ${userMessage}`;
     }
 
-    // Analisi richiesta (intent + parametri estratti dal testo)
+    log("Messaggio inviato a analyzeUserRequest:", messageForAnalysis.substring(0, 500) + (messageForAnalysis.length > 500 ? "..." : ""));
+
+    // === ANALISI INTENT ===
     let analysis = await analyzeUserRequest(messageForAnalysis);
+    log("ANALISI INTENT COMPLETA:", JSON.stringify(analysis, null, 2));
 
-    // Aggiorno il contesto strutturato con i nuovi dati (persistente per userId)
+    // Aggiornamento contesto
     const ctxUpdated = { ...ctxBefore };
-
     if (analysis.brand) ctxUpdated.brand = analysis.brand;
     if (analysis.model) ctxUpdated.model = analysis.model;
     if (analysis.year) ctxUpdated.year = analysis.year;
     if (analysis.version) ctxUpdated.version = analysis.version;
     if (analysis.wheel) ctxUpdated.wheel = analysis.wheel;
     if (analysis.diameter) ctxUpdated.diameter = analysis.diameter;
-
     userContext.set(userId, ctxUpdated);
 
-    console.log("Analysis:", analysis);
-    console.log("Context after analysis:", ctxUpdated);
-    console.log("ANALISI INTENT:", JSON.stringify(analysis, null, 2));
+    log("Contesto aggiornato:", ctxUpdated);
 
-    // Alias comodi per leggere il contesto “finale” di questa richiesta
-    const carBrand = ctxUpdated.brand || null;
-    const carModel = ctxUpdated.model || null;
-    const carYear = ctxUpdated.year || null;
-    const carVersion = ctxUpdated.version || null;
-    const wheelModelName = ctxUpdated.wheel || null;
-    const wheelDiameter = ctxUpdated.diameter || null;
+    // Alias
+    const carBrand = ctxUpdated.brand;
+    const carModel = ctxUpdated.model;
+    const carYear = ctxUpdated.year;
+    const carVersion = ctxUpdated.version;
+    const wheelModelName = ctxUpdated.wheel;
+    const wheelDiameter = ctxUpdated.diameter;
 
+    // Variabili risultato
     let fitmentRow = null;
     let homologations = [];
     let fitmentSummary = null;
@@ -520,132 +499,102 @@ app.post("/chat", async (req, res) => {
     let needMoreCarData = false;
     let needMoreWheelData = false;
 
-    // === Caso: info su modello di ruota (wheel_info) ===
+    // =============================================================
+    // 1. Info cerchio singolo
+    // =============================================================
     if (analysis.intent === "wheel_info" && wheelModelName) {
+      log("Intent: wheel_info → cerco info per cerchio:", wheelModelName);
       try {
         wheelInfoSummary = await getWheelBasicInfo(wheelModelName);
-        console.log("Wheel info:", wheelInfoSummary);
+        log("getWheelBasicInfo risultato:", wheelInfoSummary);
       } catch (e) {
-        console.warn("Errore getWheelBasicInfo:", e.message || e);
+        log("ERRORE getWheelBasicInfo:", e);
       }
     }
 
-    // === Caso: su quali auto posso montare questo cerchio (fitment_by_wheel) ===
+    // =============================================================
+    // 2. Su quali auto va questo cerchio?
+    // =============================================================
     if (analysis.intent === "fitment_by_wheel") {
       if (!wheelModelName || !wheelDiameter) {
         needMoreWheelData = true;
+        log("Mancano dati cerchio per fitment_by_wheel → needMoreWheelData = true");
       } else {
+        log(`Cerco auto per cerchio: ${wheelModelName} ${wheelDiameter}"`);
         try {
-          wheelFitmentCars = await getCarsForWheel(
-            wheelModelName,
-            wheelDiameter
-          );
-          console.log("Cars for wheel:", wheelFitmentCars?.length || 0);
+          wheelFitmentCars = await getCarsForWheel(wheelModelName, wheelDiameter);
+          log(`Trovate ${wheelFitmentCars?.length || 0} auto per questo cerchio`);
         } catch (e) {
-          console.warn("Errore getCarsForWheel:", e.message || e);
+          log("ERRORE getCarsForWheel:", e);
         }
       }
     }
 
-    // === Intent che si basano sull'auto ===
+    // =============================================================
+    // 3. Intent legati all'auto
+    // =============================================================
     const isCarFitmentIntent =
-      analysis.intent === "fitment_by_car" ||
-      analysis.intent === "recommendation_by_car" ||
-      analysis.intent === "omologation_by_car";
+      ["fitment_by_car", "recommendation_by_car", "omologation_by_car"].includes(analysis.intent);
 
     let manufacturerId = null;
     let modelId = null;
 
     if (isCarFitmentIntent) {
-      // Se manca qualcosa dell'auto → lo segnaliamo al modello (per fare domande mirate)
+      log("Intent legato all'auto:", analysis.intent);
+
       if (!carBrand || !carModel || (!carYear && !carVersion)) {
         needMoreCarData = true;
+        log("Dati auto incompleti → needMoreCarData = true");
       }
 
-      // Se abbiamo almeno marca + modello possiamo calcolare i modelli di cerchio dal DB
       if (carBrand && carModel) {
-        try {
-          manufacturerId = await findManufacturerId(carBrand);
-          if (manufacturerId) {
-            modelId = await findModelId(manufacturerId, carModel);
-          }
-          if (modelId) {
-            // Cerchi associati alla famiglia di vetture
-            carWheelOptions = await getWheelModelsForCarModel(modelId);
+        log(`Cerco manufacturer per marca: "${carBrand}"`);
+        manufacturerId = await findManufacturerId(carBrand);
+        log("→ manufacturerId:", manufacturerId);
 
-            // Se sta chiedendo omologazioni, recuperiamo anche le omologazioni per famiglia
-            if (analysis.intent === "omologation_by_car") {
-              carHomologations = await getHomologationsByCarModel(modelId);
-              console.log(
-                "Homologations by car model:",
-                carHomologations?.length || 0
-              );
-            }
+        if (manufacturerId) {
+          log(`Cerco model per: "${carModel}" (manufacturer ${manufacturerId})`);
+          modelId = await findModelId(manufacturerId, carModel);
+          log("→ modelId:", modelId);
+        }
+
+        if (modelId) {
+          log("Cerco cerchi compatibili per modelId:", modelId);
+          carWheelOptions = await getWheelModelsForCarModel(modelId);
+          log(`Trovati ${carWheelOptions?.length || 0} modelli cerchio per questa famiglia auto`);
+
+          if (analysis.intent === "omologation_by_car") {
+            carHomologations = await getHomologationsByCarModel(modelId);
+            log(`Omologazioni per famiglia auto: ${carHomologations?.length || 0} record`);
           }
-        } catch (err) {
-          console.warn(
-            "Errore getWheelModelsForCarModel/getHomologationsByCarModel:",
-            err.message || err
-          );
         }
       }
 
-      // Se abbiamo anche versione + cerchio + diametro → fitment preciso (applications)
-      if (
-        carBrand &&
-        carModel &&
-        carVersion &&
-        wheelModelName &&
-        wheelDiameter &&
-        modelId
-      ) {
+      // Fitment preciso (auto + cerchio specifico)
+      if (carBrand && carModel && carVersion && wheelModelName && wheelDiameter && modelId) {
+        log("Tentativo fitment preciso: auto + cerchio specifico");
         try {
-          const carVersionId = await findCarVersionIdByLabel(
-            modelId,
-            carVersion
-          );
+          const carVersionId = await findCarVersionIdByLabel(modelId, carVersion);
+          log("→ carVersionId:", carVersionId);
           if (!carVersionId) throw new Error("Versione auto non trovata");
 
           const wheelModelId = await findWheelModelId(wheelModelName);
+          log("→ wheelModelId:", wheelModelId);
           if (!wheelModelId) throw new Error("Modello cerchio non trovato");
 
-          const wheelVersion = await findWheelVersionId(
-            wheelModelId,
-            wheelDiameter
-          );
-          if (!wheelVersion) throw new Error("Versione cerchio non trovata");
+          const wheelVersion = await findWheelVersionId(wheelModelId, wheelDiameter);
+          log("→ wheelVersion (am_wheel):", wheelVersion?.am_wheel);
+          if (!wheelVersion) throw new Error("Diametro cerchio non trovato");
 
-          fitmentRow = await getFitmentData(
-            carVersionId,
-            wheelVersion.am_wheel
-          );
-
+          fitmentRow = await getFitmentData(carVersionId, wheelVersion.am_wheel);
+          log("→ fitmentRow trovato?", !!fitmentRow);
           if (fitmentRow) {
-            if (fitmentRow.homologation_tuv)
-              homologations.push({
-                type: "TUV",
-                code: fitmentRow.homologation_tuv,
-              });
-            if (fitmentRow.homologation_kba)
-              homologations.push({
-                type: "KBA",
-                code: fitmentRow.homologation_kba,
-              });
-            if (fitmentRow.homologation_ece)
-              homologations.push({
-                type: "ECE",
-                code: fitmentRow.homologation_ece,
-              });
-            if (fitmentRow.homologation_jwl)
-              homologations.push({
-                type: "JWL",
-                code: fitmentRow.homologation_jwl,
-              });
-            if (fitmentRow.homologation_ita)
-              homologations.push({
-                type: "ITA",
-                code: fitmentRow.homologation_ita,
-              });
+            // Omologazioni
+            if (fitmentRow.homologation_tuv) homologations.push({ type: "TUV", code: fitmentRow.homologation_tuv });
+            if (fitmentRow.homologation_kba) homologations.push({ type: "KBA", code: fitmentRow.homologation_kba });
+            if (fitmentRow.homologation_ece) homologations.push({ type: "ECE", code: fitmentRow.homologation_ece });
+            if (fitmentRow.homologation_jwl) homologations.push({ type: "JWL", code: fitmentRow.homologation_jwl });
+            if (fitmentRow.homologation_ita) homologations.push({ type: "ITA", code: fitmentRow.homologation_ita });
 
             fitmentSummary = {
               carVersionId,
@@ -657,265 +606,103 @@ app.post("/chat", async (req, res) => {
               plug_play: !!fitmentRow.plug_play,
               homologations,
             };
+            log("FITMENT PRECISO TROVATO → fitmentSummary creato");
+          } else {
+            log("FITMENT NON TROVATO → verrà forzata risposta 'non compatibile'");
           }
-          // Qui NON c'è else: se fitmentRow === null → messaggio obbligatorio più sotto
         } catch (e) {
-          console.warn("Errore fitment DB:", e.message || e);
+          log("ERRORE durante fitment preciso:", e.message || e);
         }
       }
     }
 
-    // Costruzione dei messaggi per GPT--4o
+    // =============================================================
+    // Costruzione prompt per GPT-4o
+    // =============================================================
     const messages = [
       { role: "system", content: fondmetalPrompt },
       {
         role: "system",
-        content: `
-CONTESTO UTENTE ATTUALE (persistente per questo userId):
-
-Auto:
-- Marca: ${carBrand || "non specificata"}
-- Modello: ${carModel || "non specificato"}
-- Anno: ${carYear || "non specificato"}
-- Versione: ${carVersion || "non specificata"}
-
-Cerchio richiesto:
-- Modello: ${wheelModelName || "non specificato"}
-- Diametro: ${wheelDiameter || "non specificato"}
-
-REGOLE:
-- Se l’utente usa follow-up brevi ("sportivi", "19 pollici", "nera", ecc.), interpreta SEMPRE in relazione a questi dati.
-- NON chiedere MAI informazioni già presenti sopra, a meno che l’utente non le cambi o le contraddica esplicitamente.
-- Se l’utente aggiunge informazioni nuove, integrale nel contesto invece di ripartire da zero.
-- L’auto ha SEMPRE la precedenza: prima i dati auto → poi i cerchi → poi le preferenze estetiche/commerciali.
-        `,
+        content: `CONTESTO UTENTE ATTUALE:\nAuto → Marca: ${carBrand || "-"} | Modello: ${carModel || "-"} | Anno: ${carYear || "-"} | Versione: ${carVersion || "-"}\nCerchio → Modello: ${wheelModelName || "-"} | Diametro: ${wheelDiameter || "-"}\nRegole contesto: non chiedere dati già presenti.`,
       },
     ];
 
-    // MESSAGGIO OBBLIGATORIO SE NON ESISTE RIGA IN APPLICATIONS
-    if (
-      carBrand &&
-      carModel &&
-      carVersion &&
-      wheelModelName &&
-      wheelDiameter &&
-      fitmentRow === null
-    ) {
+    // Messaggio obbligatorio se fitment non trovato
+    if (carBrand && carModel && carVersion && wheelModelName && wheelDiameter && fitmentRow === null) {
       messages.push({
         role: "system",
-        content: `
-RISPOSTA OBBLIGATORIA:
-La combinazione tra ${carBrand} ${carModel} ${carYear || ""} 
-e il cerchio ${wheelModelName} da ${wheelDiameter}" 
-NON risulta compatibile secondo i dati ufficiali Fondmetal.
-È VIETATO suggerire possibilità, interpretazioni o compatibilità generiche.
-Questa combinazione è NON compatibile al 100%.
-        `,
+        content: `RISPOSTA OBBLIGATORIA: La combinazione tra ${carBrand} ${carModel} ${carYear || ""} e il cerchio ${wheelModelName} da ${wheelDiameter}" NON risulta compatibile secondo i dati ufficiali Fondmetal. È VIETATO suggerire compatibilità.`,
       });
+      log("AGGIUNTO MESSAGGIO OBBLIGATORIO: combinazione NON compatibile");
     }
 
-    // Dati tecnici ruota (wheel_info)
-    if (wheelInfoSummary) {
-      messages.push({
-        role: "system",
-        content:
-          "DATI UFFICIALI FONDMETAL (CERCHIO RICHIESTO):\n" +
-          `Modello: ${wheelInfoSummary.model_name}\n` +
-          `Diametri disponibili (REALMENTE ESISTENTI): ${wheelInfoSummary.diameters}\n` +
-          `Finiture ufficiali: ${wheelInfoSummary.finishes}\n\n` +
-          "REGOLE OBBLIGATORIE:\n" +
-          "- Il cerchio esiste SOLO nei diametri indicati sopra.\n" +
-          "- Se l’utente chiede un diametro diverso, devi rispondere: 'Il cerchio non esiste in quel diametro secondo i dati ufficiali Fondmetal.'\n" +
-          "- Non inventare MAI nuovi diametri.\n" +
-          "- Non inventare MAI nuove finiture.\n",
-      });
-    }
+    // Inserimento dati recuperati (con log)
+    if (wheelInfoSummary) { messages.push({ role: "system", content: `DATI CERCHIO: ${wheelInfoSummary.model_name} | Diametri: ${wheelInfoSummary.diameters} | Finiture: ${wheelInfoSummary.finishes}` }); log("Aggiunti dati wheel_info"); }
+    if (carWheelOptions?.length) { messages.push({ role: "system", content: `Lista cerchi compatibili (famiglia auto): ${carWheelOptions.map(r => r.model_name).join(", ")}` }); log("Aggiunta lista cerchi per famiglia auto"); }
+    if (carHomologations?.length) { messages.push({ role: "system", content: `Omologazioni disponibili per questa famiglia auto.` }); log("Aggiunte omologazioni famiglia"); }
+    if (fitmentSummary) { messages.push({ role: "system", content: `FITMENT PRECISO: Plug&Play=${fitmentSummary.plug_play} | Omologazioni: ${homologations.map(h => h.type).join(", ")}` }); log("Aggiunto fitment preciso"); }
+    if (wheelFitmentCars?.length) { messages.push({ role: "system", content: `Questo cerchio è montato su: ${wheelFitmentCars.map(c => c.manufacturer_name + " " + c.model_name).join(", ")}` }); log("Aggiunte auto per cerchio"); }
 
-    // Dati tecnici: lista modelli ruota per l'auto (anche senza cerchio specifico)
-    if (carWheelOptions && carWheelOptions.length) {
-      const list = carWheelOptions
-        .map(
-          (r) =>
-            `- ${r.model_name} (diametro massimo a catalogo: ${
-              r.max_diameter || "n/d"
-            })`
-        )
-        .join("\n");
-
-      messages.push({
-        role: "system",
-        content:
-          "Dal database interno risultano i seguenti modelli di cerchi Fondmetal associati a questa famiglia di vetture:\n" +
-          list +
-          "\n\nQuando l'utente ti chiede che cerchi consigli/gli montano sulla sua auto, " +
-          "puoi usare questi modelli come base per i tuoi suggerimenti. " +
-          "Spiega sempre che si tratta di modelli compatibili secondo i nostri dati tecnici, " +
-          "ma che per la conferma finale di misure e omologazioni è comunque necessario verificare il singolo allestimento.",
-      });
-    }
-
-    messages.push({
-      role: "system",
-      content:
-        "Se NON trovi una riga nella tabella 'applications' che colleghi la versione auto all'am_wheel, allora la combinazione è al 100% NON compatibile. Devi rispondere chiaramente: 'Il cerchio X nel diametro Y NON risulta compatibile con la tua auto secondo i dati Fondmetal.'\n" +
-        "Non usare probabilità, non usare 'potrebbe', non usare 'in generale'.",
-    });
-
-    // Risposta commerciale pronta quando abbiamo almeno marca + modello (+ anno opzionale)
-    if (
-      isCarFitmentIntent &&
-      !needMoreCarData &&
-      carWheelOptions &&
-      carWheelOptions.length &&
-      !fitmentSummary
-    ) {
-      const list = carWheelOptions
-        .slice(0, 6)
-        .map((r) => `- ${r.model_name} (${r.max_diameter}")`)
-        .join("\n");
-
-      messages.push({
-        role: "system",
-        content:
-          "Per questa auto hai già a disposizione una lista di cerchi compatibili dal database Fondmetal.\n" +
-          "Elenca almeno 3 modelli tra questi, con un tono commerciale e cordiale, spiegando brevemente lo stile di ciascun cerchio.",
-      });
-    }
-
-    // Dati tecnici omologazioni per famiglia di vetture
-    if (carHomologations && carHomologations.length) {
-      const lines = carHomologations.map((r) => {
-        const types = [];
-        if (r.homologation_ece) types.push("ECE");
-        if (r.homologation_tuv) types.push("TUV");
-        if (r.homologation_kba) types.push("KBA");
-        if (r.homologation_jwl) types.push("JWL");
-        if (r.homologation_ita) types.push("ITA");
-        const typesText = types.length
-          ? types.join(", ")
-          : "nessuna omologazione disponibile per questa combinazione.";
-        return `- Cerchio ${r.wheel_model} ${r.diameter}" → ${typesText}`;
-      });
-
-      const content =
-        "Dati di omologazione dal database interno per questa famiglia di vetture:\n" +
-        lines.join("\n") +
-        "\n\nInterpreta così questi dati:\n" +
-        "- Se per un certo cerchio/diametro una colonna di omologazione è vuota, significa che per quella combinazione NON è disponibile quell'omologazione.\n" +
-        "- Se la colonna contiene un valore, significa che per quella combinazione è presente quell'omologazione.\n\n" +
-        "Quando l'utente chiede quali cerchi sono omologati per la sua auto, usa queste informazioni per spiegare:\n" +
-        "- quali modelli di cerchio Fondmetal risultano omologati (e con quali tipi di omologazione),\n" +
-        "- e quali invece non hanno omologazione registrata, senza inventare nulla.";
-
-      messages.push({
-        role: "system",
-        content,
-      });
-    }
-
-    // Dati tecnici fitment (auto + cerchio specifico)
-    if (fitmentSummary) {
-      const omologazioniText = homologations.length
-        ? homologations
-            .map((h) => `${h.type}${h.code ? ` (${h.code})` : ""}`)
-            .join(", ")
-        : "nessuna omologazione presente nel database per questa combinazione.";
-
-      messages.push({
-        role: "system",
-        content:
-          "Dati tecnici verificati dal database interno per la richiesta attuale:\n" +
-          `- Marca: ${carBrand || "non specificata"}\n` +
-          `- Modello: ${carModel || "non specificato"}\n` +
-          `- Anno: ${carYear || "non specificato"}\n` +
-          `- Versione: ${carVersion || "non specificata"}\n` +
-          `- Cerchio: ${wheelModelName || "non specificato"}\n` +
-          `- Diametro: ${wheelDiameter || "non specificato"}\n` +
-          `- Fitment type: ${fitmentSummary.fitment_type || "n/d"}\n` +
-          `- Plug & Play: ${fitmentSummary.plug_play ? "sì" : "no"}\n` +
-          `- Limitazioni: ${
-            fitmentSummary.limitation_IT ||
-            fitmentSummary.limitation ||
-            "nessuna specificata"
-          }\n` +
-          `- Omologazioni: ${omologazioniText}\n\n` +
-          "Quando rispondi su questa combinazione specifica auto-cerchio devi basarti su questi dati e non inventare nulla.",
-      });
-    }
-
-    // Dati tecnici: elenco vetture per un certo cerchio
-    if (wheelFitmentCars && wheelFitmentCars.length && wheelModelName) {
-      const list = wheelFitmentCars
-        .map((r) => `- ${r.manufacturer_name} ${r.model_name}`)
-        .join("\n");
-
-      messages.push({
-        role: "system",
-        content:
-          "Dal database interno risultano le seguenti famiglie di vetture su cui è applicato questo cerchio nel diametro indicato:\n" +
-          list +
-          "\n\nQuando l'utente ti chiede su quali auto può montare questo cerchio, " +
-          "usa questo elenco per spiegare i principali modelli compatibili.",
-      });
-    }
-
-    // Se mancano dati sull'auto e l'intent è legato al fitment dell'auto → fai domande mirate
     if (isCarFitmentIntent && needMoreCarData) {
-      messages.push({
-        role: "system",
-        content:
-          "L'utente ti sta chiedendo informazioni sui cerchi per una specifica auto (compatibilità, consigli o omologazioni), " +
-          "ma non ti ha ancora dato tutti i dati necessari. " +
-          "Prima di dare qualunque risposta dettagliata, fai UNA o due domande chiare per completare i dati dell'auto: " +
-          "chiedi almeno marca, modello e soprattutto anno di immatricolazione (o generazione/serie). ",
-      });
+      messages.push({ role: "system", content: "Mancano dati auto → chiedi marca, modello e anno." });
+      log("Aggiunto prompt: chiedere dati auto mancanti");
     }
-
-    // Se mancano dati sul cerchio per fitment_by_wheel → chiedi modello + diametro
     if (analysis.intent === "fitment_by_wheel" && needMoreWheelData) {
-      messages.push({
-        role: "system",
-        content:
-          "L'utente ti sta chiedendo su quali auto può montare un certo cerchio, " +
-          "ma non ti ha ancora indicato chiaramente modello del cerchio e diametro. " +
-          "Prima di dare qualsiasi informazione tecnica, chiedi all'utente almeno: " +
-          "nome del modello di cerchio Fondmetal e diametro (es. 18, 19, 20). ",
-      });
+      messages.push({ role: "system", content: "Mancano modello cerchio e diametro → chiedili." });
+      log("Aggiunto prompt: chiedere dati cerchio");
     }
 
-    // Aggiungo SOLO il messaggio utente
     messages.push({ role: "user", content: userMessage });
 
+    log("PROMPT FINALE INVIATO A OPENAI (lunghezza messaggi:", messages.length, ")");
+    // log completo del prompt (opzionale, può essere lungo)
+    // messages.forEach((m, i) => log(`Msg ${i}:`, m.role, "→", m.content.substring(0, 200) + (m.content.length > 200 ? "..." : "")));
+
+    // =============================================================
+    // Chiamata OpenAI
+    // =============================================================
     const completion = await openai.chat.completions.create({
       model: OPENAI_MAIN_MODEL,
       messages,
-      temperature: 0.2, // abbassato per massima fedeltà sui dati tecnici
+      temperature: 0.2,
     });
 
     const reply = completion.choices[0].message.content;
+    log("RISPOSTA OPENAI:", reply.substring(0, 500) + (reply.length > 500 ? "..." : ""));
 
-    // Aggiorna cronologia (massimo 20 messaggi)
-    const updatedHistory = [
-      ...history,
-      { role: "user", content: userMessage },
-      { role: "assistant", content: reply },
-    ].slice(-20);
+    // Aggiornamento cronologia
+    const updatedHistory = [...history, { role: "user", content: userMessage }, { role: "assistant", content: reply }].slice(-20);
     chatHistory.set(userId, updatedHistory);
 
+    // Risposta al client
     res.json({
       reply,
+      debug: {
+        intent: analysis.intent,
+        context: ctxUpdated,
+        manufacturerId,
+        modelId,
+        fitmentFound: !!fitmentSummary,
+        wheelOptionsFound: !!(carWheelOptions?.length),
+        wheelInfoFound: !!wheelInfoSummary,
+        carsForWheelFound: !!(wheelFitmentCars?.length),
+        homologationsFound: !!(carHomologations?.length),
+        durationMs: Date.now() - startTime,
+      },
       fitmentUsed: !!fitmentSummary,
       wheelInfoUsed: !!wheelInfoSummary,
       carWheelOptionsUsed: !!(carWheelOptions && carWheelOptions.length),
       wheelFitmentUsed: !!(wheelFitmentCars && wheelFitmentCars.length),
       carHomologationsUsed: !!(carHomologations && carHomologations.length),
     });
+
+    log(`FINE RICHIESTA (tot ${Date.now() - startTime}ms)`);
+    log("────────────────────────────────────────────────────────────────────");
+
   } catch (error) {
-    console.error(
-      "ERRORE /chat:",
-      error.response?.data || error.message || error
-    );
-    res.status(500).json({ error: "Errore nella generazione della risposta." });
+    log("ERRORE GLOBALE /chat:", error);
+    console.error("STACK:", error.stack);
+    res.status(500).json({ error: "Errore interno del server" });
   }
 });
 
