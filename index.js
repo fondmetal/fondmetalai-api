@@ -441,29 +441,43 @@ async function getHomologationsByCarModel(modelId) {
 }
 
 // 4. Fitment preciso (versione auto + cerchio + diametro)
-async function getFitmentData(carVersionLabel, wheelModelName, diameter) {
+// === FITMENT PRECISO - VERSIONE 100% DINAMICA (funziona per TUTTE le auto) ===
+async function getFitmentData(brand, model, wheelModelName, diameter) {
+  const dia = typeof diameter === "string"
+    ? parseInt(String(diameter).replace(/\D+/g, ""), 10)
+    : Number(diameter);
+
+  if (!dia || Number.isNaN(dia) || !brand || !model || !wheelModelName) return null;
+
   try {
     const [rows] = await pool.query(`
       SELECT 
         appl.plug_play,
         appl.fitment_type,
         appl.limitation_IT,
-        appl.homologation_tuv, appl.homologation_kba, appl.homologation_ece,
-        appl.homologation_jwl, appl.homologation_ita
+        appl.homologation_tuv,
+        appl.homologation_kba,
+        appl.homologation_ece,
+        appl.homologation_jwl,
+        appl.homologation_ita
       FROM mod_combined_full_10 mcf
       JOIN applications appl ON mcf.applications_id = appl.id
-      JOIN am_wheels aw ON appl.am_wheel = aw.id AND aw.status = 'ACTIVE' AND aw.diameter = ?
-      JOIN am_wheel_models awm ON aw.model = awm.id AND awm.model = ?
-      JOIN am_wheel_lines awl ON awm.line = awl.id AND awl.id = 22
+      JOIN am_wheels aw ON appl.am_wheel = aw.id 
+        AND aw.status = 'ACTIVE' 
+        AND aw.diameter = ?
+      JOIN am_wheel_models awm ON aw.model = awm.id 
+        AND awm.model = ?
+      JOIN am_wheel_lines awl ON awm.line = awl.id 
+        AND awl.id = 22  -- Fondmetal ufficiale
       WHERE mcf.car_manufacturers_manufacturer LIKE ?
         AND mcf.car_models_model LIKE ?
-        AND (mcf.cars_production_time_start <= ? OR mcf.cars_production_time_start IS NULL)
       LIMIT 1
-    `, [diameter, wheelModelName, 'Maserati', 'Ghibli', '2025']); // esempio, poi dinamico
+    `, [dia, wheelModelName, `%${brand}%`, `%${model}%`]);
 
+    console.log(`[OK] Fitment preciso per ${brand} ${model} + ${wheelModelName} ${dia}" → ${rows.length ? 'TROVATO' : 'non trovato'}`);
     return rows.length ? rows[0] : null;
   } catch (err) {
-    console.warn("Errore fitment preciso:", err.message);
+    console.warn("Errore getFitmentData:", err.message);
     return null;
   }
 }
@@ -641,7 +655,9 @@ app.post("/chat", async (req, res) => {
           log("→ wheelVersion (am_wheel):", wheelVersion?.am_wheel);
           if (!wheelVersion) throw new Error("Diametro cerchio non trovato");
 
-          fitmentRow = await getFitmentData(carVersionId, wheelVersion.am_wheel);
+          // Usa marca e modello dal contesto
+          fitmentRow = await getFitmentData(carBrand, carModel, wheelModelName, wheelDiameter);
+          
           log("→ fitmentRow trovato?", !!fitmentRow);
           if (fitmentRow) {
             // Omologazioni
