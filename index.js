@@ -259,7 +259,7 @@ Esempio:
 
 async function findManufacturerId(name) {
   const [rows] = await pool.query(
-    "SELECT id FROM car_manufacturers WHERE manufacturer LIKE ? LIMIT 1",
+    "SELECT id FROM car_manufacturers WHERE LOWER(manufacturer) LIKE LOWER(?) LIMIT 1",
     [`%${name}%`]
   );
   return rows.length ? rows[0].id : null;
@@ -1144,6 +1144,16 @@ app.get("/fitment-debug", async (req, res) => {
     console.error("[DB] /fitment-debug error:", err);
     res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
+});
+
+app.get("/debug-tables", async (req, res) => {
+  const tables = ["car_manufacturers", "car_models", "car_versions", "am_wheel_models", "am_wheels", "applications"];
+  const result = {};
+  for (const table of tables) {
+    const [rows] = await pool.query(`DESCRIBE ${table}`);
+    result[table] = rows.map(r => ({ Field: r.Field, Type: r.Type }));
+  }
+  res.json(result);
 });
 
 app.post("/fitment", async (req, res) => {
