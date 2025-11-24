@@ -173,9 +173,7 @@ REGOLE TECNICHE DI MASSIMA PRIORITÀ (OBBLIGATORIE)
 `;
 
 // Memoria persistente (per processo) di contesto strutturato e cronologia
-// userId → { brand, model, year, version, wheel, diameter }
 const userContext = new Map();
-// userId → [ { role, content }, ... ]
 const chatHistory = new Map();
 
 // =========================
@@ -251,7 +249,7 @@ Esempio:
     };
   } catch (err) {
     console.error("Errore analyzeUserRequest:", err);
-    return null;
+    return { intent: "other" };
   }
 }
 
@@ -259,7 +257,6 @@ Esempio:
 // FUNZIONI DB DI SUPPORTO
 // =========================
 
-// 1) Trova ID del costruttore (marca auto)
 async function findManufacturerId(name) {
   const [rows] = await pool.query(
     "SELECT id FROM car_manufacturers WHERE manufacturer LIKE ? LIMIT 1",
@@ -268,7 +265,6 @@ async function findManufacturerId(name) {
   return rows.length ? rows[0].id : null;
 }
 
-// 2) Trova ID del modello (car_models)
 async function findModelId(manufacturerId, modelName) {
   const [rows] = await pool.query(
     "SELECT id FROM car_models WHERE manufacturer = ? AND model LIKE ? LIMIT 1",
@@ -277,7 +273,6 @@ async function findModelId(manufacturerId, modelName) {
   return rows.length ? rows[0].id : null;
 }
 
-// 3) Trova ID della versione auto (car_versions) in base alla label versione
 async function findCarVersionIdByLabel(modelId, versionName) {
   const [rows] = await pool.query(
     "SELECT id FROM car_versions WHERE car = ? AND version LIKE ? LIMIT 1",
@@ -286,7 +281,6 @@ async function findCarVersionIdByLabel(modelId, versionName) {
   return rows.length ? rows[0].id : null;
 }
 
-// 4) Trova ID del modello cerchio (am_wheel_models)
 async function findWheelModelId(modelName) {
   const [rows] = await pool.query(
     "SELECT id FROM am_wheel_models WHERE model LIKE ? LIMIT 1",
@@ -295,7 +289,6 @@ async function findWheelModelId(modelName) {
   return rows.length ? rows[0].id : null;
 }
 
-// 5) Trova versione cerchio (diametro) e relativo am_wheel
 async function findWheelVersionId(wheelModelId, diameter) {
   const dia =
     typeof diameter === "string"
@@ -312,10 +305,9 @@ async function findWheelVersionId(wheelModelId, diameter) {
      LIMIT 1`,
     [wheelModelId, dia]
   );
-  return rows.length ? rows[0] : null; // { id: versione_id, am_wheel: wheelId }
+  return rows.length ? rows[0] : null;
 }
 
-// 6) Recupera la combinazione in applications
 async function getFitmentData(carVersionId, wheelAmId) {
   const [rows] = await pool.query(
     "SELECT * FROM applications WHERE car = ? AND am_wheel = ? LIMIT 1",
@@ -329,7 +321,6 @@ async function getFitmentData(carVersionId, wheelAmId) {
   return rows.length ? rows[0] : null;
 }
 
-// 7) Info di base su un modello di cerchio: diametri + finiture
 async function getWheelBasicInfo(wheelName) {
   const [rows] = await pool.query(
     `SELECT 
@@ -349,7 +340,6 @@ async function getWheelBasicInfo(wheelName) {
   return rows.length ? rows[0] : null;
 }
 
-// 8) Tutti i modelli ruota che risultano applicati ad un modello di auto
 async function getWheelModelsForCarModel(modelId) {
   const [rows] = await pool.query(
     `SELECT 
@@ -359,7 +349,7 @@ async function getWheelModelsForCarModel(modelId) {
        MAX(w.updated_at) AS last_update
      FROM car_versions cv
      JOIN applications a ON a.car = cv.id
-     JOIN am_wheels w    ON a.am_wheel = w.id
+     JOIN am_wheels w    ON a.am_wheel = w.id AND w.status = 'ACTIVE'
      JOIN am_wheel_models m ON w.model = m.id
      WHERE cv.car = ?
        AND w.status = 'ACTIVE'
@@ -371,7 +361,6 @@ async function getWheelModelsForCarModel(modelId) {
   return rows;
 }
 
-// 9) Tutte le vetture su cui monta un certo cerchio (fitment_by_wheel)
 async function getCarsForWheel(wheelName, diameter) {
   const dia =
     typeof diameter === "string"
@@ -386,7 +375,7 @@ async function getCarsForWheel(wheelName, diameter) {
        cm.model         AS model_name
      FROM am_wheel_models wm
      JOIN am_wheels w        ON w.model = wm.id
-     JOIN applications a     ON a.am_wheel = w.id
+     JOIN applications a     ON a.am_wheel = w.id AND w.status = 'ACTIVE'
      JOIN car_versions cv    ON cv.id = a.car
      JOIN car_models cm      ON cm.id = cv.car
      JOIN car_manufacturers man ON man.id = cm.manufacturer
@@ -401,7 +390,6 @@ async function getCarsForWheel(wheelName, diameter) {
   return rows;
 }
 
-// 10) Omologazioni per una famiglia di vetture (per intent omologation_by_car)
 async function getHomologationsByCarModel(modelId) {
   const [rows] = await pool.query(
     `SELECT 
@@ -414,7 +402,7 @@ async function getHomologationsByCarModel(modelId) {
        MAX(a.homologation_ita) AS homologation_ita
      FROM car_versions cv
      JOIN applications a   ON a.car = cv.id
-     JOIN am_wheels w      ON a.am_wheel = w.id
+     JOIN am_wheels w      ON a.am_wheel = w.id AND w.status = 'ACTIVE'
      JOIN am_wheel_models m ON w.model = m.id
      WHERE cv.car = ?
        AND w.status = 'ACTIVE'
@@ -445,8 +433,12 @@ app.post("/chat", async (req, res) => {
     let messageForAnalysis = userMessage;
     const trimmed = userMessage.trim();
 
-    const hasCarCtx =
-      !!(ctxBefore.brand || ctxBefore.model || ctxBefore.year || ctxBefore.version);
+    const hasCarCtx = !!(
+      ctxBefore.brand ||
+      ctxBefore.model ||
+      ctxBefore.year ||
+      ctxBefore.version
+    );
     const hasWheelCtx = !!(ctxBefore.wheel || ctxBefore.diameter);
 
     // Se abbiamo già una vettura/cerchio nel contesto, lo comunichiamo al modello di analisi
@@ -493,9 +485,6 @@ app.post("/chat", async (req, res) => {
 
     // Analisi richiesta (intent + parametri estratti dal testo)
     let analysis = await analyzeUserRequest(messageForAnalysis);
-    if (!analysis) {
-      analysis = { intent: "other" };
-    }
 
     // Aggiorno il contesto strutturato con i nuovi dati (persistente per userId)
     const ctxUpdated = { ...ctxBefore };
@@ -511,6 +500,7 @@ app.post("/chat", async (req, res) => {
 
     console.log("Analysis:", analysis);
     console.log("Context after analysis:", ctxUpdated);
+    console.log("ANALISI INTENT:", JSON.stringify(analysis, null, 2));
 
     // Alias comodi per leggere il contesto “finale” di questa richiesta
     const carBrand = ctxUpdated.brand || null;
@@ -668,13 +658,14 @@ app.post("/chat", async (req, res) => {
               homologations,
             };
           }
+          // Qui NON c'è else: se fitmentRow === null → messaggio obbligatorio più sotto
         } catch (e) {
           console.warn("Errore fitment DB:", e.message || e);
         }
       }
     }
 
-    // Costruzione dei messaggi per GPT-4o
+    // Costruzione dei messaggi per GPT--4o
     const messages = [
       { role: "system", content: fondmetalPrompt },
       {
@@ -701,6 +692,28 @@ REGOLE:
       },
     ];
 
+    // MESSAGGIO OBBLIGATORIO SE NON ESISTE RIGA IN APPLICATIONS
+    if (
+      carBrand &&
+      carModel &&
+      carVersion &&
+      wheelModelName &&
+      wheelDiameter &&
+      fitmentRow === null
+    ) {
+      messages.push({
+        role: "system",
+        content: `
+RISPOSTA OBBLIGATORIA:
+La combinazione tra ${carBrand} ${carModel} ${carYear || ""} 
+e il cerchio ${wheelModelName} da ${wheelDiameter}" 
+NON risulta compatibile secondo i dati ufficiali Fondmetal.
+È VIETATO suggerire possibilità, interpretazioni o compatibilità generiche.
+Questa combinazione è NON compatibile al 100%.
+        `,
+      });
+    }
+
     // Dati tecnici ruota (wheel_info)
     if (wheelInfoSummary) {
       messages.push({
@@ -714,7 +727,7 @@ REGOLE:
           "- Il cerchio esiste SOLO nei diametri indicati sopra.\n" +
           "- Se l’utente chiede un diametro diverso, devi rispondere: 'Il cerchio non esiste in quel diametro secondo i dati ufficiali Fondmetal.'\n" +
           "- Non inventare MAI nuovi diametri.\n" +
-          "- Non inventare MAI nuove finiture.\n"
+          "- Non inventare MAI nuove finiture.\n",
       });
     }
 
@@ -745,7 +758,7 @@ REGOLE:
       role: "system",
       content:
         "Se NON trovi una riga nella tabella 'applications' che colleghi la versione auto all'am_wheel, allora la combinazione è al 100% NON compatibile. Devi rispondere chiaramente: 'Il cerchio X nel diametro Y NON risulta compatibile con la tua auto secondo i dati Fondmetal.'\n" +
-        "Non usare probabilità, non usare 'potrebbe', non usare 'in generale'."
+        "Non usare probabilità, non usare 'potrebbe', non usare 'in generale'.",
     });
 
     // Risposta commerciale pronta quando abbiamo almeno marca + modello (+ anno opzionale)
@@ -754,7 +767,7 @@ REGOLE:
       !needMoreCarData &&
       carWheelOptions &&
       carWheelOptions.length &&
-      !fitmentSummary // cioè non stiamo cercando versione + diametro specifici
+      !fitmentSummary
     ) {
       const list = carWheelOptions
         .slice(0, 6)
@@ -769,7 +782,7 @@ REGOLE:
       });
     }
 
-    // Dati tecnici omologazioni per famiglia di vetture (omologation_by_car, anche senza cerchio specifico)
+    // Dati tecnici omologazioni per famiglia di vetture
     if (carHomologations && carHomologations.length) {
       const lines = carHomologations.map((r) => {
         const types = [];
@@ -800,7 +813,7 @@ REGOLE:
       });
     }
 
-    // Dati tecnici fitment (auto + cerchio specifico, applications)
+    // Dati tecnici fitment (auto + cerchio specifico)
     if (fitmentSummary) {
       const omologazioniText = homologations.length
         ? homologations
@@ -826,12 +839,11 @@ REGOLE:
             "nessuna specificata"
           }\n` +
           `- Omologazioni: ${omologazioniText}\n\n` +
-          "Quando rispondi su questa combinazione specifica auto-cerchio devi basarti su questi dati e non inventare nulla. " +
-          "Se l'utente parla di un'altra auto o di un altro cerchio per cui non hai dati dal database, spiegalo chiaramente e chiedi maggiori dettagli.",
+          "Quando rispondi su questa combinazione specifica auto-cerchio devi basarti su questi dati e non inventare nulla.",
       });
     }
 
-    // Dati tecnici: elenco vetture per un certo cerchio (fitment_by_wheel)
+    // Dati tecnici: elenco vetture per un certo cerchio
     if (wheelFitmentCars && wheelFitmentCars.length && wheelModelName) {
       const list = wheelFitmentCars
         .map((r) => `- ${r.manufacturer_name} ${r.model_name}`)
@@ -843,9 +855,7 @@ REGOLE:
           "Dal database interno risultano le seguenti famiglie di vetture su cui è applicato questo cerchio nel diametro indicato:\n" +
           list +
           "\n\nQuando l'utente ti chiede su quali auto può montare questo cerchio, " +
-          "usa questo elenco per spiegare i principali modelli compatibili. " +
-          "Non è necessario elencare ogni singola versione: puoi raggruppare per marca e modello, " +
-          "ricordando sempre che per la conferma finale servono i dettagli della singola vettura.",
+          "usa questo elenco per spiegare i principali modelli compatibili.",
       });
     }
 
@@ -857,10 +867,7 @@ REGOLE:
           "L'utente ti sta chiedendo informazioni sui cerchi per una specifica auto (compatibilità, consigli o omologazioni), " +
           "ma non ti ha ancora dato tutti i dati necessari. " +
           "Prima di dare qualunque risposta dettagliata, fai UNA o due domande chiare per completare i dati dell'auto: " +
-          "chiedi almeno marca, modello e soprattutto anno di immatricolazione (o generazione/serie). " +
-          "Spiega in modo semplice che misure e omologazioni cambiano tra le generazioni, " +
-          "quindi hai bisogno di quei dati per essere più preciso. " +
-          "Evita di rimandare subito al configuratore: guida tu la conversazione e intanto dai qualche indicazione generale utile.",
+          "chiedi almeno marca, modello e soprattutto anno di immatricolazione (o generazione/serie). ",
       });
     }
 
@@ -872,28 +879,27 @@ REGOLE:
           "L'utente ti sta chiedendo su quali auto può montare un certo cerchio, " +
           "ma non ti ha ancora indicato chiaramente modello del cerchio e diametro. " +
           "Prima di dare qualsiasi informazione tecnica, chiedi all'utente almeno: " +
-          "nome del modello di cerchio Fondmetal e diametro (es. 18, 19, 20). " +
-          "Spiega che compatibilità e omologazioni cambiano molto in base al diametro.",
+          "nome del modello di cerchio Fondmetal e diametro (es. 18, 19, 20). ",
       });
     }
 
-    // Aggiungo SOLO il messaggio utente (la cronologia strutturata è già nel contesto sopra)
+    // Aggiungo SOLO il messaggio utente
     messages.push({ role: "user", content: userMessage });
 
     const completion = await openai.chat.completions.create({
       model: OPENAI_MAIN_MODEL,
       messages,
-      temperature: 0.4,
+      temperature: 0.2, // abbassato per massima fedeltà sui dati tecnici
     });
 
     const reply = completion.choices[0].message.content;
 
-    // Aggiorna cronologia (massimo 10 messaggi per userId)
+    // Aggiorna cronologia (massimo 20 messaggi)
     const updatedHistory = [
       ...history,
       { role: "user", content: userMessage },
       { role: "assistant", content: reply },
-    ].slice(-10);
+    ].slice(-20);
     chatHistory.set(userId, updatedHistory);
 
     res.json({
@@ -913,13 +919,8 @@ REGOLE:
   }
 });
 
-// Avvio server
-app.listen(port, () => {
-  console.log(`FondmetalAI API in ascolto su http://localhost:${port}`);
-});
-
 // =========================
-// HEALTHCHECK & DEBUG
+// HEALTHCHECK & DEBUG (tutto originale)
 // =========================
 
 app.get("/health-db", async (_req, res) => {
@@ -1014,7 +1015,6 @@ app.get("/tcp-check", async (req, res) => {
   }
 });
 
-// Elenco tabelle visibili nel DB
 app.get("/db-tables", async (_req, res) => {
   try {
     const [rows] = await pool.query("SHOW TABLES");
@@ -1025,7 +1025,6 @@ app.get("/db-tables", async (_req, res) => {
   }
 });
 
-// Sample dalla tabella applications (debug)
 app.get("/db-applications-sample", async (_req, res) => {
   try {
     const [rows] = await pool.query("SELECT * FROM applications LIMIT 10");
@@ -1036,7 +1035,6 @@ app.get("/db-applications-sample", async (_req, res) => {
   }
 });
 
-// Endpoint di debug: restituisce la combinazione cerchio-auto e le omologazioni
 app.get("/fitment-debug", async (req, res) => {
   try {
     const carId = parseInt(req.query.car, 10);
@@ -1224,4 +1222,9 @@ app.post("/fitment", async (req, res) => {
       error: String(err?.message || err),
     });
   }
+});
+
+// Avvio server
+app.listen(port, () => {
+  console.log(`FondmetalAI API in ascolto su http://localhost:${port}`);
 });
