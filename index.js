@@ -308,19 +308,6 @@ async function findWheelVersionId(wheelModelId, diameter) {
   return rows.length ? rows[0] : null;
 }
 
-async function getFitmentData(carVersionId, wheelAmId) {
-  const [rows] = await pool.query(
-    "SELECT * FROM applications WHERE car = ? AND am_wheel = ? LIMIT 1",
-    [carVersionId, wheelAmId]
-  );
-  if (rows.length) {
-    if (rows[0].channel) {
-      rows[0].channel = String(rows[0].channel).replace(/J$/i, "");
-    }
-  }
-  return rows.length ? rows[0] : null;
-}
-
 async function getWheelBasicInfo(wheelName) {
   const [rows] = await pool.query(
     `SELECT 
