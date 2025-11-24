@@ -340,78 +340,145 @@ async function getWheelBasicInfo(wheelName) {
   return rows.length ? rows[0] : null;
 }
 
+// 1. Lista cerchi Fondmetal per famiglia auto
 async function getWheelModelsForCarModel(modelId) {
-  const rows = await loggedQuery(`
-    SELECT DISTINCT
-      m.id AS model_id,
-      m.model AS model_name,
-      MAX(w.diameter) AS max_diameter
-    FROM applications a
-    JOIN am_wheels w ON a.am_wheel = w.id AND w.status = 'ACTIVE'
-    JOIN am_wheel_models m ON w.model = m.id
-    WHERE EXISTS (
-      SELECT 1 FROM car_versions cv 
-      WHERE cv.id = a.car AND cv.car = ?
-    )
-    GROUP BY m.id, m.model
-    ORDER BY MAX(w.diameter) DESC
-    LIMIT 15
-  `, [modelId]);
+  try {
+    const [carInfo] = await pool.query(`
+      SELECT man.manufacturer, cm.model 
+      FROM car_models cm
+      JOIN car_manufacturers man ON cm.manufacturer = man.id
+      WHERE cm.id = ?
+    `, [modelId]);
 
-  debugLog('getWheelModelsForCarModel FIXATO → trovati', rows.length, 'cerchi per modelId', modelId);
-  return rows;
+    if (!carInfo.length) return [];
+
+    const brand = carInfo[0].manufacturer;
+    const modelName = carInfo[0].model;
+
+    const [rows] = await pool.query(`
+      SELECT DISTINCT
+        awm.model AS model_name,
+        MAX(aw.diameter) AS max_diameter
+      FROM mod_combined_full_10 mcf
+      JOIN am_wheels aw ON mcf.am_wheels_id = aw.id AND aw.status = 'ACTIVE'
+      JOIN am_wheel_models awm ON aw.model = awm.id
+      JOIN am_wheel_lines awl ON awm.line = awl.id AND awl.id = 22  -- Fondmetal ufficiale
+      WHERE mcf.car_manufacturers_manufacturer LIKE ?
+        AND mcf.car_models_model LIKE ?
+      GROUP BY awm.id, awm.model
+      ORDER BY max_diameter DESC
+      LIMIT 12
+    `, [`%${brand}%`, `%${modelName}%`]);
+
+    console.log(`[OK] Fondmetal per ${brand} ${modelName} → ${rows.length} modelli`);
+    return rows;
+  } catch (err) {
+    console.warn("Errore getWheelModelsForCarModel:", err.message);
+    return [];
+  }
 }
 
+// 2. Auto compatibili con un certo cerchio Fondmetal
 async function getCarsForWheel(wheelName, diameter) {
-  const dia =
-    typeof diameter === "string"
-      ? parseInt(String(diameter).replace(/\D+/g, ""), 10)
-      : Number(diameter);
+  const dia = typeof diameter === "string"
+    ? parseInt(String(diameter).replace(/\D+/g, ""), 10)
+    : Number(diameter);
 
   if (!dia || Number.isNaN(dia)) return [];
 
-  const [rows] = await pool.query(
-    `SELECT 
-       man.manufacturer AS manufacturer_name,
-       cm.model         AS model_name
-     FROM am_wheel_models wm
-     JOIN am_wheels w        ON w.model = wm.id
-     JOIN applications a     ON a.am_wheel = w.id AND w.status = 'ACTIVE'
-     JOIN car_versions cv    ON cv.id = a.car
-     JOIN car_models cm      ON cm.id = cv.car
-     JOIN car_manufacturers man ON man.id = cm.manufacturer
-     WHERE wm.model LIKE ?
-       AND w.diameter = ?
-     GROUP BY man.manufacturer, cm.model
-     ORDER BY man.manufacturer, cm.model
-     LIMIT 100`,
-    [`%${wheelName}%`, dia]
-  );
+  try {
+    const [rows] = await pool.query(`
+      SELECT DISTINCT
+        mcf.car_manufacturers_manufacturer AS manufacturer_name,
+        mcf.car_models_model AS model_name,
+        mcf.cars_production_time_start AS year_start,
+        mcf.cars_production_time_stop AS year_stop
+      FROM mod_combined_full_10 mcf
+      JOIN am_wheels aw ON mcf.am_wheels_id = aw.id 
+        AND aw.status = 'ACTIVE' 
+        AND aw.diameter = ?
+      JOIN am_wheel_models awm ON aw.model = awm.id 
+        AND awm.model = ?
+      JOIN am_wheel_lines awl ON awm.line = awl.id 
+        AND awl.id = 22  -- Solo Fondmetal ufficiale
+      ORDER BY 
+        mcf.car_manufacturers_manufacturer,
+        mcf.car_models_model
+      LIMIT 100
+    `, [dia, wheelName]);
 
-  return rows;
+    console.log(`[OK] Auto per cerchio ${wheelName} ${dia}": ${rows.length} modelli trovati`);
+    return rows;
+  } catch (err) {
+    console.warn("Errore getCarsForWheel:", err.message);
+    return [];
+  }
 }
 
+// 3. Omologazioni per famiglia auto (solo Fondmetal)
 async function getHomologationsByCarModel(modelId) {
-  const [rows] = await pool.query(
-    `SELECT 
-       m.model    AS wheel_model,
-       w.diameter AS diameter,
-       MAX(a.homologation_tuv) AS homologation_tuv,
-       MAX(a.homologation_kba) AS homologation_kba,
-       MAX(a.homologation_ece) AS homologation_ece,
-       MAX(a.homologation_jwl) AS homologation_jwl,
-       MAX(a.homologation_ita) AS homologation_ita
-     FROM car_versions cv
-     JOIN applications a   ON a.car = cv.id
-     JOIN am_wheels w      ON a.am_wheel = w.id AND w.status = 'ACTIVE'
-     JOIN am_wheel_models m ON w.model = m.id
-     WHERE cv.car = ?
-       AND w.status = 'ACTIVE'
-     GROUP BY m.model, w.diameter
-     ORDER BY m.model, w.diameter`,
-    [modelId]
-  );
-  return rows;
+  try {
+    const [carInfo] = await pool.query(`
+      SELECT man.manufacturer, cm.model FROM car_models cm
+      JOIN car_manufacturers man ON cm.manufacturer = man.id
+      WHERE cm.id = ?
+    `, [modelId]);
+
+    if (!carInfo.length) return [];
+
+    const [rows] = await pool.query(`
+      SELECT 
+        awm.model AS wheel_model,
+        aw.diameter,
+        IF(appl.homologation_tuv != '', 'TUV', NULL) AS tuv,
+        IF(appl.homologation_kba != '', 'KBA', NULL) AS kba,
+        IF(appl.homologation_ece != '', 'ECE', NULL) AS ece,
+        IF(appl.homologation_jwl != '', 'JWL', NULL) AS jwl,
+        IF(appl.homologation_ita != '', 'ITA', NULL) AS ita
+      FROM mod_combined_full_10 mcf
+      JOIN applications appl ON mcf.applications_id = appl.id
+      JOIN am_wheels aw ON appl.am_wheel = aw.id AND aw.status = 'ACTIVE'
+      JOIN am_wheel_models awm ON aw.model = awm.id
+      JOIN am_wheel_lines awl ON awm.line = awl.id AND awl.id = 22
+      WHERE mcf.car_manufacturers_manufacturer LIKE ?
+        AND mcf.car_models_model LIKE ?
+      GROUP BY awm.model, aw.diameter
+      ORDER BY awm.model, aw.diameter
+    `, [`%${carInfo[0].manufacturer}%`, `%${carInfo[0].model}%`]);
+
+    return rows;
+  } catch (err) {
+    console.warn("Errore omologazioni:", err.message);
+    return [];
+  }
+}
+
+// 4. Fitment preciso (versione auto + cerchio + diametro)
+async function getFitmentData(carVersionLabel, wheelModelName, diameter) {
+  try {
+    const [rows] = await pool.query(`
+      SELECT 
+        appl.plug_play,
+        appl.fitment_type,
+        appl.limitation_IT,
+        appl.homologation_tuv, appl.homologation_kba, appl.homologation_ece,
+        appl.homologation_jwl, appl.homologation_ita
+      FROM mod_combined_full_10 mcf
+      JOIN applications appl ON mcf.applications_id = appl.id
+      JOIN am_wheels aw ON appl.am_wheel = aw.id AND aw.status = 'ACTIVE' AND aw.diameter = ?
+      JOIN am_wheel_models awm ON aw.model = awm.id AND awm.model = ?
+      JOIN am_wheel_lines awl ON awm.line = awl.id AND awl.id = 22
+      WHERE mcf.car_manufacturers_manufacturer LIKE ?
+        AND mcf.car_models_model LIKE ?
+        AND (mcf.cars_production_time_start <= ? OR mcf.cars_production_time_start IS NULL)
+      LIMIT 1
+    `, [diameter, wheelModelName, 'Maserati', 'Ghibli', '2025']); // esempio, poi dinamico
+
+    return rows.length ? rows[0] : null;
+  } catch (err) {
+    console.warn("Errore fitment preciso:", err.message);
+    return null;
+  }
 }
 
 // ===================================================
