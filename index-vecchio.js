@@ -22,9 +22,10 @@ const openai = new OpenAI({
 });
 
 // Modello principale GPT-4o
-const OPENAI_MAIN_MODEL = process.env.OPENAI_MAIN_MODEL || "gpt-4o";
+const OPENAI_MAIN_MODEL =
+  process.env.OPENAI_MAIN_MODEL || "gpt-4o";
 
-// Modello analisi (GPT-4o-mini)
+// Modello analisi (sempre GPT-4o)
 const OPENAI_ANALYSIS_MODEL =
   process.env.OPENAI_ANALYSIS_MODEL || "gpt-4o-mini";
 
@@ -146,11 +147,11 @@ LINGUA
 - Mantieni sempre un tono coerente: tecnico ma comprensibile, cortese, sicuro quando hai i dati, prudente quando non li hai.
 `;
 
-// Memoria persistente (per processo) di contesto strutturato e cronologia
-// userId → { brand, model, year, version, wheel, diameter }
-const userContext = new Map();
-// userId → [ { role, content }, ... ]
-const chatHistory = new Map();
+// Memoria persistente della sessione (dati estratti)
+const userContext = new Map(); 
+// Memoria cronologia conversazione per ogni utente
+const chatHistory = new Map(); // userId → array di messaggi
+// userContext[userId] = { brand, model, year, version, wheel, diameter }
 
 // =========================
 // ANALISI RICHIESTA (INTENT + PARAMETRI)
@@ -410,88 +411,53 @@ app.post("/chat", async (req, res) => {
       return res.status(400).json({ error: "Messaggio vuoto." });
     }
 
-    // Cronologia conversazione e contesto strutturato già noto
+    // Recupero cronologia PRIMA dell'analisi, così posso usarla per i follow-up (es. "2022")
     const history = chatHistory.get(userId) || [];
-    const ctxBefore = userContext.get(userId) || {};
 
-    // Costruzione del messaggio per l'analisi dell'intent
+    // Preparazione messaggio per l’analisi INTENT
     let messageForAnalysis = userMessage;
-    const trimmed = userMessage.trim();
 
-    const hasCarCtx =
-      !!(ctxBefore.brand || ctxBefore.model || ctxBefore.year || ctxBefore.version);
-    const hasWheelCtx = !!(ctxBefore.wheel || ctxBefore.diameter);
+    // Recupero ultimo messaggio utente “completo” (con marca/modello/anno se già forniti)
+    const lastFullUser = [...history]
+      .reverse()
+      .find((m) => m.role === "user" && m.content.length > 10);
 
-    // Se abbiamo già una vettura/cerchio nel contesto, lo comunichiamo al modello di analisi
-    if (hasCarCtx || hasWheelCtx) {
+    // Se esiste un contesto precedente, lo includiamo sempre nell’analisi
+    if (lastFullUser && lastFullUser !== userMessage) {
       messageForAnalysis =
-        "Dati già noti sull'auto e sui cerchi (non chiederli di nuovo se non vengono cambiati esplicitamente):\n" +
-        `- Marca: ${ctxBefore.brand || "non specificata"}\n` +
-        `- Modello: ${ctxBefore.model || "non specificato"}\n` +
-        `- Anno: ${ctxBefore.year || "non specificato"}\n` +
-        `- Versione: ${ctxBefore.version || "non specificata"}\n\n` +
-        "Cerchio richiesto:\n" +
-        `- Modello: ${ctxBefore.wheel || "non specificato"}\n` +
-        `- Diametro: ${ctxBefore.diameter || "non specificato"}\n\n` +
-        "Nuovo messaggio dell'utente:\n" +
+        "Contesto precedente dell'utente:\n" +
+        lastFullUser.content +
+        "\n\nNuovo messaggio dell'utente:\n" +
         userMessage;
     }
 
-    // Individuo l'ultimo messaggio utente “lungo” per gestire follow-up brevi
-    const lastLongUser = [...history]
-      .reverse()
-      .find((m) => m.role === "user" && m.content && m.content.length > 20);
-
-    // Follow-up tipo "2022", "si", "no" (pochi caratteri, niente lettere)
-    if (trimmed.length < 6 && !/[a-zA-Z]/.test(trimmed) && lastLongUser) {
-      const ctxHeader =
-        hasCarCtx || hasWheelCtx
-          ? "Dati già noti sull'auto e sui cerchi (non chiederli di nuovo se non vengono cambiati esplicitamente):\n" +
-            `- Marca: ${ctxBefore.brand || "non specificata"}\n` +
-            `- Modello: ${ctxBefore.model || "non specificato"}\n` +
-            `- Anno: ${ctxBefore.year || "non specificato"}\n` +
-            `- Versione: ${ctxBefore.version || "non specificata"}\n\n` +
-            "Cerchio richiesto:\n" +
-            `- Modello: ${ctxBefore.wheel || "non specificato"}\n` +
-            `- Diametro: ${ctxBefore.diameter || "non specificato"}\n\n`
-          : "";
-
+    // Gestione follow-up brevi tipo “2022”, “si”, “no”
+    const trimmed = userMessage.trim();
+    if (trimmed.length < 6 && !/[a-zA-Z]/.test(trimmed) && lastFullUser) {
       messageForAnalysis =
-        ctxHeader +
-        "Ultimo messaggio completo dell'utente:\n" +
-        lastLongUser.content +
+        lastFullUser.content +
         "\n\nRisposta aggiuntiva dell'utente (follow-up): " +
         userMessage;
     }
 
-    // Analisi richiesta (intent + parametri estratti dal testo)
+    // Analisi richiesta (intent + parametri)
     let analysis = await analyzeUserRequest(messageForAnalysis);
+    // --- SALVATAGGIO CONTEXT DINAMICO ---
+    let ctx = userContext.get(userId) || {};
+
+    if (analysis.brand) ctx.brand = analysis.brand;
+    if (analysis.model) ctx.model = analysis.model;
+    if (analysis.year) ctx.year = analysis.year;
+    if (analysis.version) ctx.version = analysis.version;
+
+    if (analysis.wheel) ctx.wheel = analysis.wheel;
+    if (analysis.diameter) ctx.diameter = analysis.diameter;
+
+    userContext.set(userId, ctx);
     if (!analysis) {
       analysis = { intent: "other" };
     }
-
-    // Aggiorno il contesto strutturato con i nuovi dati (persistente per userId)
-    const ctxUpdated = { ...ctxBefore };
-
-    if (analysis.brand) ctxUpdated.brand = analysis.brand;
-    if (analysis.model) ctxUpdated.model = analysis.model;
-    if (analysis.year) ctxUpdated.year = analysis.year;
-    if (analysis.version) ctxUpdated.version = analysis.version;
-    if (analysis.wheel) ctxUpdated.wheel = analysis.wheel;
-    if (analysis.diameter) ctxUpdated.diameter = analysis.diameter;
-
-    userContext.set(userId, ctxUpdated);
-
     console.log("Analysis:", analysis);
-    console.log("Context after analysis:", ctxUpdated);
-
-    // Alias comodi per leggere il contesto “finale” di questa richiesta
-    const carBrand = ctxUpdated.brand || null;
-    const carModel = ctxUpdated.model || null;
-    const carYear = ctxUpdated.year || null;
-    const carVersion = ctxUpdated.version || null;
-    const wheelModelName = ctxUpdated.wheel || null;
-    const wheelDiameter = ctxUpdated.diameter || null;
 
     let fitmentRow = null;
     let homologations = [];
@@ -504,9 +470,9 @@ app.post("/chat", async (req, res) => {
     let needMoreWheelData = false;
 
     // === Caso: info su modello di ruota (wheel_info) ===
-    if (analysis.intent === "wheel_info" && wheelModelName) {
+    if (analysis.intent === "wheel_info" && analysis.wheel) {
       try {
-        wheelInfoSummary = await getWheelBasicInfo(wheelModelName);
+        wheelInfoSummary = await getWheelBasicInfo(analysis.wheel);
         console.log("Wheel info:", wheelInfoSummary);
       } catch (e) {
         console.warn("Errore getWheelBasicInfo:", e.message || e);
@@ -515,13 +481,13 @@ app.post("/chat", async (req, res) => {
 
     // === Caso: su quali auto posso montare questo cerchio (fitment_by_wheel) ===
     if (analysis.intent === "fitment_by_wheel") {
-      if (!wheelModelName || !wheelDiameter) {
+      if (!analysis.wheel || !analysis.diameter) {
         needMoreWheelData = true;
       } else {
         try {
           wheelFitmentCars = await getCarsForWheel(
-            wheelModelName,
-            wheelDiameter
+            analysis.wheel,
+            analysis.diameter
           );
           console.log("Cars for wheel:", wheelFitmentCars?.length || 0);
         } catch (e) {
@@ -540,17 +506,21 @@ app.post("/chat", async (req, res) => {
     let modelId = null;
 
     if (isCarFitmentIntent) {
-      // Se manca qualcosa dell'auto → lo segnaliamo al modello (per fare domande mirate)
-      if (!carBrand || !carModel || (!carYear && !carVersion)) {
+      // Se manca qualcosa dell'auto → segnalalo al modello (per fare domande, non per bloccare il DB)
+      if (
+        !analysis.brand ||
+        !analysis.model ||
+        (!analysis.year && !analysis.version)
+      ) {
         needMoreCarData = true;
       }
 
-      // Se abbiamo almeno marca + modello possiamo calcolare i modelli di cerchio dal DB
-      if (carBrand && carModel) {
+      // Se abbiamo almeno marca + modello, calcoliamo i modelli di cerchio dal DB
+      if (analysis.brand && analysis.model) {
         try {
-          manufacturerId = await findManufacturerId(carBrand);
+          manufacturerId = await findManufacturerId(analysis.brand);
           if (manufacturerId) {
-            modelId = await findModelId(manufacturerId, carModel);
+            modelId = await findModelId(manufacturerId, analysis.model);
           }
           if (modelId) {
             // Cerchi associati alla famiglia di vetture
@@ -573,28 +543,28 @@ app.post("/chat", async (req, res) => {
         }
       }
 
-      // Se abbiamo anche versione + cerchio + diametro → fitment preciso (applications)
+      // Se in più abbiamo anche versione + cerchio + diametro → fitment preciso
       if (
-        carBrand &&
-        carModel &&
-        carVersion &&
-        wheelModelName &&
-        wheelDiameter &&
+        analysis.brand &&
+        analysis.model &&
+        analysis.version &&
+        analysis.wheel &&
+        analysis.diameter &&
         modelId
       ) {
         try {
           const carVersionId = await findCarVersionIdByLabel(
             modelId,
-            carVersion
+            analysis.version
           );
           if (!carVersionId) throw new Error("Versione auto non trovata");
 
-          const wheelModelId = await findWheelModelId(wheelModelName);
+          const wheelModelId = await findWheelModelId(analysis.wheel);
           if (!wheelModelId) throw new Error("Modello cerchio non trovato");
 
           const wheelVersion = await findWheelVersionId(
             wheelModelId,
-            wheelDiameter
+            analysis.diameter
           );
           if (!wheelVersion) throw new Error("Versione cerchio non trovata");
 
@@ -647,31 +617,30 @@ app.post("/chat", async (req, res) => {
       }
     }
 
-    // Costruzione dei messaggi per GPT-4o
     const messages = [
       { role: "system", content: fondmetalPrompt },
       {
         role: "system",
         content: `
-CONTESTO UTENTE ATTUALE (persistente per questo userId):
+    CONTESTO UTENTE ATTUALE:
 
-Auto:
-- Marca: ${carBrand || "non specificata"}
-- Modello: ${carModel || "non specificato"}
-- Anno: ${carYear || "non specificato"}
-- Versione: ${carVersion || "non specificata"}
+    Auto:
+    - Marca: ${ctx.brand || "non specificata"}
+    - Modello: ${ctx.model || "non specificato"}
+    - Anno: ${ctx.year || "non specificato"}
+    - Versione: ${ctx.version || "non specificata"}
 
-Cerchio richiesto:
-- Modello: ${wheelModelName || "non specificato"}
-- Diametro: ${wheelDiameter || "non specificato"}
+    Cerchio richiesto:
+    - Modello: ${ctx.wheel || "non specificato"}
+    - Diametro: ${ctx.diameter || "non specificato"}
 
-REGOLE:
-- Se l’utente usa follow-up brevi ("sportivi", "19 pollici", "nera", ecc.), interpreta SEMPRE in relazione a questi dati.
-- NON chiedere MAI informazioni già presenti sopra, a meno che l’utente non le cambi o le contraddica esplicitamente.
-- Se l’utente aggiunge informazioni nuove, integrale nel contesto invece di ripartire da zero.
-- L’auto ha SEMPRE la precedenza: prima i dati auto → poi i cerchi → poi le preferenze estetiche/commerciali.
-        `,
-      },
+    REGOLE:
+    - Se l’utente parla usando follow-up brevi ("sportivi", "19 pollici", "nera", ecc.), interpreta SEMPRE in relazione al contesto precedente.
+    - NON chiedere MAI informazioni già presenti sopra, a meno che l’utente non le contraddica.
+    - Se l’utente aggiunge informazioni nuove, integrale nel contesto.
+    - L’auto ha SEMPRE la precedenza: prima i dati auto → poi i cerchi → poi le preferenze.
+        `
+      }
     ];
 
     // Dati tecnici ruota (wheel_info)
@@ -715,13 +684,13 @@ REGOLE:
       });
     }
 
-    // Risposta commerciale pronta quando abbiamo almeno marca + modello (+ anno opzionale)
+    // NUOVO: risposta commerciale pronta quando abbiamo almeno marca + modello (+ anno opzionale)
     if (
       isCarFitmentIntent &&
       !needMoreCarData &&
       carWheelOptions &&
       carWheelOptions.length &&
-      !fitmentSummary // cioè non stiamo cercando versione + diametro specifici
+      !fitmentSummary // cioè non stiamo cercando versione + diametro
     ) {
       const list = carWheelOptions
         .slice(0, 6)
@@ -767,8 +736,8 @@ REGOLE:
       });
     }
 
-    // Dati tecnici fitment (auto + cerchio specifico, applications)
-    if (fitmentSummary) {
+    // Dati tecnici fitment (auto + cerchio specifico)
+    if (fitmentSummary && analysis) {
       const omologazioniText = homologations.length
         ? homologations
             .map((h) => `${h.type}${h.code ? ` (${h.code})` : ""}`)
@@ -779,12 +748,12 @@ REGOLE:
         role: "system",
         content:
           "Dati tecnici verificati dal database interno per la richiesta attuale:\n" +
-          `- Marca: ${carBrand || "non specificata"}\n` +
-          `- Modello: ${carModel || "non specificato"}\n` +
-          `- Anno: ${carYear || "non specificato"}\n` +
-          `- Versione: ${carVersion || "non specificata"}\n` +
-          `- Cerchio: ${wheelModelName || "non specificato"}\n` +
-          `- Diametro: ${wheelDiameter || "non specificato"}\n` +
+          `- Marca: ${analysis.brand}\n` +
+          `- Modello: ${analysis.model}\n` +
+          `- Anno: ${analysis.year || "non specificato"}\n` +
+          `- Versione: ${analysis.version || "non specificata"}\n` +
+          `- Cerchio: ${analysis.wheel}\n` +
+          `- Diametro: ${analysis.diameter}\n` +
           `- Fitment type: ${fitmentSummary.fitment_type || "n/d"}\n` +
           `- Plug & Play: ${fitmentSummary.plug_play ? "sì" : "no"}\n` +
           `- Limitazioni: ${
@@ -799,7 +768,7 @@ REGOLE:
     }
 
     // Dati tecnici: elenco vetture per un certo cerchio (fitment_by_wheel)
-    if (wheelFitmentCars && wheelFitmentCars.length && wheelModelName) {
+    if (wheelFitmentCars && wheelFitmentCars.length && analysis.wheel) {
       const list = wheelFitmentCars
         .map((r) => `- ${r.manufacturer_name} ${r.model_name}`)
         .join("\n");
@@ -824,7 +793,7 @@ REGOLE:
           "L'utente ti sta chiedendo informazioni sui cerchi per una specifica auto (compatibilità, consigli o omologazioni), " +
           "ma non ti ha ancora dato tutti i dati necessari. " +
           "Prima di dare qualunque risposta dettagliata, fai UNA o due domande chiare per completare i dati dell'auto: " +
-          "chiedi almeno marca, modello e soprattutto anno di immatricolazione (o generazione/serie). " +
+          "chiedi marca, modello e soprattutto anno di immatricolazione (o generazione/serie). " +
           "Spiega in modo semplice che misure e omologazioni cambiano tra le generazioni, " +
           "quindi hai bisogno di quei dati per essere più preciso. " +
           "Evita di rimandare subito al configuratore: guida tu la conversazione e intanto dai qualche indicazione generale utile.",
@@ -844,7 +813,7 @@ REGOLE:
       });
     }
 
-    // Aggiungo SOLO il messaggio utente (la cronologia strutturata è già nel contesto sopra)
+    // Aggiungo cronologia e messaggio utente
     messages.push({ role: "user", content: userMessage });
 
     const completion = await openai.chat.completions.create({
@@ -855,7 +824,7 @@ REGOLE:
 
     const reply = completion.choices[0].message.content;
 
-    // Aggiorna cronologia (massimo 10 messaggi per userId)
+    // Aggiorna cronologia (massimo 10 scambi)
     const updatedHistory = [
       ...history,
       { role: "user", content: userMessage },
