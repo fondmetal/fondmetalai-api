@@ -172,6 +172,38 @@ REGOLE TECNICHE DI MASSIMA PRIORITÀ (OBBLIGATORIE)
 const userContext = new Map();
 const chatHistory = new Map();
 
+const MARKDOWN_TEMPLATES = {
+  header: (car) => `**FondmetalAI – Cerchi per la tua ${car}**`,
+
+  compatibili: (lista) =>
+    lista.length
+      ? `**Cerchi compatibili trovati:**\n${lista
+          .map((m) => `• **${m}**`)
+          .join("\n")}`
+      : "Nessun cerchio compatibile trovato con i dati attuali.",
+
+  diametri: (text) => `**Misure disponibili**\n${text}`,
+
+  finiture: (text) => `**Finiture ufficiali**\n${text}`,
+
+  omologazioni: (text) =>
+    text.includes("nessuna omologazione")
+      ? "Nessuna omologazione trovata per questa auto."
+      : `**Omologazioni e dettagli**\n${text}`,
+
+  plugplay: (yes) =>
+    yes
+      ? "Plug & Play – montaggio diretto"
+      : "Potrebbe richiedere centraggi o distanziali",
+
+  consiglio: (modello, motivo) => `Ti consiglio il **${modello}**: ${motivo}`,
+
+  nofitment: (auto, cerchio, misura) =>
+    `La combinazione **${auto}** con il cerchio **${cerchio} ${misura}"** **NON risulta compatibile** secondo i dati ufficiali Fondmetal.\n\nNon è possibile montarlo in sicurezza senza modifiche strutturali.`,
+
+  chiedi: (cosa) => `\nPer darti una risposta precisa, dimmi:\n${cosa}`,
+};
+
 // =========================
 // ANALISI RICHIESTA (INTENT + PARAMETRI)
 // =========================
@@ -887,14 +919,10 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // === PASSA DIAMETRI + FINITURE BLINDATE ===
-    // === PASSA TUTTO: DIAMETRI + FINITURE + OMOLOGAZIONI (BLINDATO AL 100%) ===
+    // === PASSA TUTTO + FORZA MARKDOWN PREMIUM (obbligatorio) ===
     if (carWheelOptions?.length) {
       const diametriText = carWheelOptions
-        .map(
-          (c) =>
-            `${c.model_name} (diametri: ${c.available_diameters.join(", ")}")`
-        )
+        .map((c) => `${c.model_name}: ${c.available_diameters.join(", ")}"`)
         .join(" | ");
 
       const finitureText = carWheelFinishes.length
@@ -905,27 +933,63 @@ app.post("/chat", async (req, res) => {
 
       const omologazioniText = carHomologations.length
         ? carHomologations
-            .map(
-              (h) =>
-                `${h.cerchio} ${h.misura} → ${h.omologazioni} (${h.plug_play})`
-            )
-            .join(" | ")
+            .map((h) => {
+              const pp = h.plug_play.includes("Plug")
+                ? "Plug & Play"
+                : "modifiche";
+              const lim =
+                h.limitazioni && h.limitazioni !== "nessuna"
+                  ? ` · ${h.limitazioni}`
+                  : "";
+              return `• **${h.cerchio}** ${h.misura} → ${h.omologazioni} ${pp}${lim}`;
+            })
+            .join("\n")
         : "nessuna omologazione trovata per questa auto";
+
+      const autoNome = `${carBrand || ""} ${carModel || ""}${
+        carYear ? " " + carYear : ""
+      }`.trim();
 
       messages.push({
         role: "system",
-        content:
-          `DATI UFFICIALI FONDMETAL – USA SOLO QUESTI (VIETATO INVENTARE):\n` +
-          `CERCHI COMPATIBILI: ${carWheelOptions
-            .map((c) => c.model_name)
-            .join(", ")}\n` +
-          `DIAMETRI REALI: ${diametriText}\n` +
-          `FINITURE REALI: ${finitureText}\n` +
-          `OMOLOGAZIONI REALI: ${omologazioniText}\n` +
-          `Se una misura, finitura o omologazione NON è elencata → NON ESISTE. Punto.`,
+        content: `REGOLE DI FORMATTAZIONE OBBLIGATORIE – USA SEMPRE QUESTO STILE (è vietato rispondere in modo piatto):
+
+TITOLO PRINCIPALE (sempre in grassetto e con l'auto):
+**FondmetalAI – Cerchi per la tua ${autoNome || "auto"}**
+
+ESEMPIO DI RISPOSTA PERFETTA (riproduci esattamente questa struttura):
+
+**Cerchi compatibili**
+• **9RR**
+• **STC-10**
+• **10R**
+
+**Diametri disponibili**
+${diametriText}
+
+**Finiture ufficiali**
+${finitureText}
+
+**Omologazioni e dettagli tecnici**
+${omologazioniText}
+
+Usa:
+- **grassetto** per nomi cerchi e misure importanti
+- • per gli elenchi
+- una riga vuota tra ogni sezione
+- Plug & Play quando c’è, "modifiche" quando non c’è
+- emoji solo queste: Plug & Play, No, Yes
+
+DATI UFFICIALI (usa SOLO questi – vietato inventare):
+CERCHI: ${carWheelOptions.map((c) => c.model_name).join(", ")}
+DIAMETRI: ${diametriText}
+FINITURE: ${finitureText}
+OMOLOGAZIONI: ${omologazioniText.replace(/\n/g, " | ")}
+
+Se qualcosa NON è in questo elenco → NON esiste. Mai inventare finiture, codici o compatibilità.`,
       });
 
-      console.log("PASSATE AL GPT → Omologazioni reali:", omologazioniText);
+      console.log("PASSATO AL GPT il blocco dati + formattazione premium");
     }
 
     // Altri dati (wheel info, omologazioni, ecc.)
