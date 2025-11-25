@@ -514,6 +514,61 @@ async function getFitmentData(brand, model, wheelModelName, diameter) {
   }
 }
 
+// === FINITURE REALI (nome cliente) per l'auto dell'utente ===
+async function getWheelFinishesForCarModel(modelId) {
+  try {
+    const [carInfo] = await pool.query(`
+      SELECT man.manufacturer, cm.model 
+      FROM car_models cm
+      JOIN car_manufacturers man ON cm.manufacturer = man.id
+      WHERE cm.id = ?
+    `, [modelId]);
+
+    if (!carInfo.length) return [];
+
+    const brand = carInfo[0].manufacturer;
+    const modelName = carInfo[0].model;
+
+    const [rows] = await pool.query(`
+      SELECT 
+        awm.model AS model_name,
+        aw.diameter,
+        GROUP_CONCAT(DISTINCT f.name ORDER BY f.name SEPARATOR ', ') AS finishes
+      FROM mod_combined_full_10 mcf
+      JOIN am_wheels aw ON mcf.am_wheels_id = aw.id AND aw.status = 'ACTIVE'
+      JOIN am_wheel_models awm ON aw.model = awm.id
+      JOIN am_wheel_lines awl ON awm.line = awl.id AND awl.id = 22
+      JOIN am_wheel_versions v ON v.am_wheel = aw.id
+      JOIN finishes f ON v.finish = f.id
+      WHERE mcf.car_manufacturers_manufacturer LIKE ?
+        AND mcf.car_models_model LIKE ?
+        AND f.name IS NOT NULL AND f.name != ''
+      GROUP BY awm.model, aw.diameter
+      ORDER BY awm.model, aw.diameter
+    `, [`%${brand}%`, `%${modelName}%`]);
+
+    // Raggruppiamo per modello (una riga per modello con tutti i diametri/finiture)
+    const result = {};
+    rows.forEach(r => {
+      if (!result[r.model_name]) {
+        result[r.model_name] = { model_name: r.model_name, finishes: new Set() };
+      }
+      if (r.finishes) {
+        r.finishes.split(', ').forEach(f => result[r.model_name].finishes.add(f));
+      }
+    });
+
+    return Object.values(result).map(item => ({
+      model_name: item.model_name,
+      finishes: Array.from(item.finishes).sort().join(' | ')
+    }));
+
+  } catch (err) {
+    console.warn("Errore getWheelFinishesForCarModel:", err.message);
+    return [];
+  }
+}
+
 // ===================================================
 // CHATBOT /chat
 // ===================================================
@@ -695,11 +750,25 @@ app.post("/chat", async (req, res) => {
         if (modelId) {
           log("Cerco cerchi compatibili per modelId:", modelId);
           carWheelOptions = await getWheelModelsForCarModel(modelId);
+          carWheelFinishes = await getWheelFinishesForCarModel(modelId);
+          console.log(`Finiture trovate per ${carBrand} ${carModel}:`, carWheelFinishes);
           log(
             `Trovati ${
               carWheelOptions?.length || 0
             } modelli cerchio per questa famiglia auto`
           );
+
+          if (carWheelFinishes?.length) {
+            const finishesText = carWheelFinishes
+              .map(f => `${f.model_name}: ${f.finishes}`)
+              .join(" | ");
+
+            messages.push({
+              role: "system",
+              content: `FINITURE DISPONIBILI (USA SOLO QUESTE, NON INVENTARNE ALTRE):\n${finishesText}\nSe una finitura non è elencata → NON esiste per quel modello.`
+            });
+            console.log("Finiture inviate al GPT →", finishesText);
+          }
 
           if (analysis.intent === "omologation_by_car") {
             carHomologations = await getHomologationsByCarModel(modelId);
