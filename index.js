@@ -174,27 +174,34 @@ const chatHistory = new Map();
 
 const MARKDOWN_TEMPLATES = {
   header: (car) => `**FondmetalAI – Cerchi per la tua ${car}**`,
-  
-  compatibili: (lista) => lista.length 
-    ? `**Cerchi compatibili trovati:**\n${lista.map(m => `• **${m}**`).join('\n')}`
-    : "Nessun cerchio compatibile trovato con i dati attuali.",
+
+  compatibili: (lista) =>
+    lista.length
+      ? `**Cerchi compatibili trovati:**\n${lista
+          .map((m) => `• **${m}**`)
+          .join("\n")}`
+      : "Nessun cerchio compatibile trovato con i dati attuali.",
 
   diametri: (text) => `**Misure disponibili**\n${text}`,
 
   finiture: (text) => `**Finiture ufficiali**\n${text}`,
 
-  omologazioni: (text) => text.includes("nessuna omologazione") 
-    ? "Nessuna omologazione trovata per questa auto."
-    : `**Omologazioni e dettagli**\n${text}`,
+  omologazioni: (text) =>
+    text.includes("nessuna omologazione")
+      ? "Nessuna omologazione trovata per questa auto."
+      : `**Omologazioni e dettagli**\n${text}`,
 
-  plugplay: (yes) => yes ? "Plug & Play – montaggio diretto" : "Potrebbe richiedere centraggi o distanziali",
+  plugplay: (yes) =>
+    yes
+      ? "Plug & Play – montaggio diretto"
+      : "Potrebbe richiedere centraggi o distanziali",
 
   consiglio: (modello, motivo) => `Ti consiglio il **${modello}**: ${motivo}`,
 
-  nofitment: (auto, cerchio, misura) => 
+  nofitment: (auto, cerchio, misura) =>
     `La combinazione **${auto}** con il cerchio **${cerchio} ${misura}"** **NON risulta compatibile** secondo i dati ufficiali Fondmetal.\n\nNon è possibile montarlo in sicurezza senza modifiche strutturali.`,
 
-  chiedi: (cosa) => `\nPer darti una risposta precisa, dimmi:\n${cosa}`
+  chiedi: (cosa) => `\nPer darti una risposta precisa, dimmi:\n${cosa}`,
 };
 
 // =========================
@@ -912,7 +919,6 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-
     if (carWheelOptions?.length) {
       const diametriText = carWheelOptions
         .map(
@@ -946,7 +952,12 @@ app.post("/chat", async (req, res) => {
           `DIAMETRI REALI: ${diametriText}\n` +
           `FINITURE REALI: ${finitureText}\n` +
           `OMOLOGAZIONI REALI: ${omologazioniText}\n` +
-          `Se una misura, finitura o omologazione NON è elencata → NON ESISTE. Punto.`,
+          `Se una misura, finitura o omologazione NON è elencata → NON ESISTE. Punto.\n\n` +
+          `FORMATTAZIONE RISPOSTA (obbligatoria):\n` +
+          `- Usa **grassetto** per nomi cerchi, misure e omologazioni importanti\n` +
+          `- Usa • per creare elenchi puntati\n` +
+          `- Separa le sezioni con una riga vuota\n` +
+          `- Usa titoli chiari come "Cerchi compatibili", "Diametri disponibili", ecc.`,
       });
 
       console.log("PASSATE AL GPT → Omologazioni reali:", omologazioniText);
