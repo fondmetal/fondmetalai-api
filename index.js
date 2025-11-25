@@ -943,28 +943,22 @@ app.post("/chat", async (req, res) => {
         : "nessuna omologazione trovata per questa auto";
 
       messages.push({
-  role: "system",
-  content:
-`I DATI QUI SOTTO SONO RISERVATI. 
-LI USI SOLO PER RAGIONARE. 
-MAI RIPORTARLI LETTERALMENTE NELLA RISPOSTA ALL’UTENTE.
-
-Dati riservati (non copiarli mai così come sono):
-CERCHI COMPATIBILI: ${carWheelOptions.map(c => c.model_name).join(", ")}
-DIAMETRI REALI: ${diametriText}
-FINITURE REALI: ${finitureText}
-OMOLOGAZIONI REALI: ${omologazioniText}
-
-Se qualcosa non è in questi elenchi → NON esiste.
-
-FORMATTAZIONE OBBLIGATORIA:
-- Inizia sempre con "**FondmetalAI – Cerchi per la tua [AUTO]**"
-- Usa titoli in grassetto (**Cerchi compatibili**, **Diametri disponibili**, ecc.)
-- Usa • per gli elenchi puntati
-- Usa **grassetto** per nomi cerchi e misure importanti
-- Una riga vuota tra ogni sezione
-- Niente codici, niente ##, niente parentesi inutili`
-});
+        role: "system",
+        content:
+          `DATI UFFICIALI FONDMETAL – USA SOLO QUESTI (VIETATO INVENTARE):\n` +
+          `CERCHI COMPATIBILI: ${carWheelOptions
+            .map((c) => c.model_name)
+            .join(", ")}\n` +
+          `DIAMETRI REALI: ${diametriText}\n` +
+          `FINITURE REALI: ${finitureText}\n` +
+          `OMOLOGAZIONI REALI: ${omologazioniText}\n` +
+          `Se una misura, finitura o omologazione NON è elencata → NON ESISTE. Punto.\n\n` +
+          `FORMATTAZIONE RISPOSTA (obbligatoria):\n` +
+          `- Usa **grassetto** per nomi cerchi, misure e omologazioni importanti\n` +
+          `- Usa • per creare elenchi puntati\n` +
+          `- Separa le sezioni con una riga vuota\n` +
+          `- Usa titoli chiari come "Cerchi compatibili", "Diametri disponibili", ecc.`,
+      });
 
       console.log("PASSATE AL GPT → Omologazioni reali:", omologazioniText);
     }
