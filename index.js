@@ -899,13 +899,30 @@ app.post("/chat", async (req, res) => {
       log("Aggiunti dati wheel_info");
     }
     if (carWheelOptions?.length) {
+      const diametriText = carWheelOptions
+        .map(
+          (c) =>
+            `${c.model_name} (diametri: ${c.available_diameters.join(", ")}")`
+        )
+        .join(" | ");
+
+      const finitureText =
+        carWheelFinishes
+          ?.map((f) => `${f.model_name}: ${f.finishes}`)
+          .join(" | ") || "nessuna finitura trovata";
+
       messages.push({
         role: "system",
-        content: `Lista cerchi compatibili (famiglia auto): ${carWheelOptions
-          .map((r) => r.model_name)
-          .join(", ")}`,
+        content:
+          `CERCHI COMPATIBILI (usa SOLO questi dati - NON inventare niente):\n` +
+          `DIAMETRI REALI: ${diametriText}\n` +
+          `FINITURE REALI (nome cliente): ${finitureText}\n` +
+          `Se un diametro o una finitura non è in questo elenco → NON ESISTE. Vietato inventare.`,
       });
-      log("Aggiunta lista cerchi per famiglia auto");
+
+      console.log("PASSATE AL GPT diametri e finiture REALI:");
+      console.log("Diametri:", diametriText);
+      console.log("Finiture:", finitureText);
     }
     if (carHomologations?.length) {
       messages.push({
