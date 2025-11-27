@@ -952,12 +952,12 @@ app.post("/chat", async (req, res) => {
           `DIAMETRI REALI: ${diametriText}\n` +
           `FINITURE REALI: ${finitureText}\n` +
           `OMOLOGAZIONI REALI: ${omologazioniText}\n` +
-          `Se una misura, finitura o omologazione NON è elencata → NON ESISTE. Punto.\n\n` +
+          `Se una misura, finitura o omologazione NON è elencata → NON ESISTE. Non inventare nomi, modelli, misure, finiture o omologazioni. MAI.\n\n` +
           `FORMATTAZIONE RISPOSTA (obbligatoria):\n` +
           `- Usa **grassetto** per nomi cerchi, misure e omologazioni importanti\n` +
           `- Usa • per creare elenchi puntati\n` +
           `- Separa le sezioni con una riga vuota\n` +
-          `- Usa titoli chiari come "Cerchi compatibili", "Diametri disponibili", ecc.`,
+          `- Usa titoli chiari come "Cerchi consigliati", "Diametri disponibili", ecc.`,
       });
 
       console.log("PASSATE AL GPT → Omologazioni reali:", omologazioniText);
@@ -1014,6 +1014,13 @@ app.post("/chat", async (req, res) => {
       { role: "assistant", content: reply },
     ].slice(-20);
     chatHistory.set(userId, updatedHistory);
+
+    if (updatedHistory.length % 4 === 0 && carBrand) {
+      messages.unshift({
+        role: "system",
+        content: `CONTEXTUAL MEMORY: Utente sta parlando di ${carBrand} ${carModel} ${carYear}. Non cambiare auto senza conferma esplicita.`
+      });
+    }
 
     res.json({
       reply,
