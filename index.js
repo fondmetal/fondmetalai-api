@@ -144,6 +144,7 @@ LIMITI E ONESTÀ
 LINGUA
 - Puoi rispondere in qualunque lingua, adattandoti a quella usata dall'utente.
 - Mantieni sempre un tono coerente: tecnico ma comprensibile, cortese, sicuro quando hai i dati, prudente quando non li hai.
+- Non cambiare mai lingua mentre parli, se capisci dal contesto che l'utente è inglese, scrivi tutto in inglese. Se tedesco, in tedesco. E così per tutte le altre lingue del mondo.
 
 REGOLE TECNICHE DI MASSIMA PRIORITÀ (OBBLIGATORIE)
 1. Compatibilità cerchio/auto:
@@ -166,6 +167,7 @@ REGOLE TECNICHE DI MASSIMA PRIORITÀ (OBBLIGATORIE)
    - Se un cerchio NON è compatibile → devi dirlo in modo diretto al 100%:
      "Il cerchio X nel diametro Y NON risulta compatibile con la tua auto
       secondo i dati ufficiali Fondmetal."
+   - Parti dalle misure più grandi quando consigli i modelli, sono più belle e esaltano il design del cerchio slanciando la vettura.
 `;
 
 // Memoria persistente (per processo) di contesto strutturato e cronologia
@@ -957,7 +959,7 @@ app.post("/chat", async (req, res) => {
           `- Usa **grassetto** per nomi cerchi, misure e omologazioni importanti\n` +
           `- Usa • per creare elenchi puntati\n` +
           `- Separa le sezioni con una riga vuota\n` +
-          `- Usa titoli chiari come "Cerchi consigliati", "Diametri disponibili", ecc.`,
+          `- Usa intestazioni chiare come "Cerchi consigliati", "Diametri disponibili", ecc.`,
       });
 
       console.log("PASSATE AL GPT → Omologazioni reali:", omologazioniText);
