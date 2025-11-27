@@ -381,18 +381,23 @@ async function getFitmentData(brand, model, wheelModelName, diameter) {
   }
 }
 
+// Scopo: info di base di un cerchio (diametri + finiture ufficiali).
 async function getWheelBasicInfo(wheelName) {
   const [rows] = await pool.query(
     `SELECT
        m.id AS model_id,
        m.model AS model_name,
-       GROUP_CONCAT(DISTINCT w.diameter ORDER BY w.diameter) AS diameters,
-       GROUP_CONCAT(DISTINCT v.finish ORDER BY v.finish) AS finishes
+       GROUP_CONCAT(DISTINCT aw.diameter ORDER BY aw.diameter) AS diameters,
+       GROUP_CONCAT(DISTINCT f.name ORDER BY f.name) AS finishes
      FROM am_wheel_models m
-     JOIN am_wheels w ON w.model = m.id
-     JOIN am_wheel_versions v ON v.am_wheel = w.id
-     WHERE m.model LIKE ?
-       AND w.status = 'ACTIVE'
+     JOIN am_wheels aw 
+       ON aw.model = m.id
+      AND aw.status = 'ACTIVE'
+     JOIN am_wheel_versions v 
+       ON v.am_wheel = aw.id
+     JOIN finishes f 
+       ON v.finish = f.id
+     WHERE LOWER(m.model) LIKE LOWER(?)
      GROUP BY m.id
      LIMIT 1`,
     [`%${wheelName}%`]
@@ -400,7 +405,7 @@ async function getWheelBasicInfo(wheelName) {
   return rows.length ? rows[0] : null;
 }
 
-// === VERSIONE FINALE CON DIAMETRI REALI ===
+// Scopo: tutti i modelli di cerchio compatibili con una certa auto (famiglia).
 async function getWheelModelsForCarModel(modelId) {
   try {
     const [carInfo] = await pool.query(
@@ -424,11 +429,16 @@ async function getWheelModelsForCarModel(modelId) {
         awm.model AS model_name,
         GROUP_CONCAT(DISTINCT aw.diameter ORDER BY aw.diameter) AS available_diameters
       FROM mod_combined_full_10 mcf
-      JOIN am_wheels aw ON mcf.am_wheels_id = aw.id AND aw.status = 'ACTIVE'
-      JOIN am_wheel_models awm ON aw.model = awm.id
-      JOIN am_wheel_lines awl ON awm.line = awl.id AND awl.id = 22
-      WHERE mcf.car_manufacturers_manufacturer LIKE ?
-        AND mcf.car_models_model LIKE ?
+      JOIN am_wheels aw 
+        ON mcf.am_wheels_id = aw.id 
+       AND aw.status = 'ACTIVE'
+      JOIN am_wheel_models awm 
+        ON aw.model = awm.id
+      JOIN am_wheel_lines awl 
+        ON awm.line = awl.id 
+       AND awl.id = 22
+      WHERE LOWER(mcf.car_manufacturers_manufacturer) LIKE LOWER(?)
+        AND LOWER(mcf.car_models_model) LIKE LOWER(?)
       GROUP BY awm.id, awm.model
       ORDER BY MAX(aw.diameter) DESC
       LIMIT 12
@@ -448,7 +458,7 @@ async function getWheelModelsForCarModel(modelId) {
   }
 }
 
-// === FUNZIONE DEFINITIVA: auto compatibili con un certo cerchio Fondmetal ===
+// Scopo: tutte le auto compatibili con un certo cerchio in un certo diametro.
 async function getCarsForWheel(wheelName, diameter) {
   const dia =
     typeof diameter === "string"
@@ -466,19 +476,22 @@ async function getCarsForWheel(wheelName, diameter) {
         mcf.cars_production_time_start AS year_start,
         mcf.cars_production_time_stop AS year_stop
       FROM mod_combined_full_10 mcf
-      JOIN am_wheels aw ON mcf.am_wheels_id = aw.id
-        AND aw.status = 'ACTIVE'
-        AND aw.diameter = ?
-      JOIN am_wheel_models awm ON aw.model = awm.id
-        AND awm.model = ?
-      JOIN am_wheel_lines awl ON awm.line = awl.id
-        AND awl.id = 22 -- Solo Fondmetal ufficiale
+      JOIN am_wheels aw 
+        ON mcf.am_wheels_id = aw.id
+       AND aw.status = 'ACTIVE'
+       AND aw.diameter = CAST(? AS UNSIGNED)
+      JOIN am_wheel_models awm 
+        ON aw.model = awm.id
+       AND LOWER(awm.model) LIKE LOWER(?)
+      JOIN am_wheel_lines awl 
+        ON awm.line = awl.id
+       AND awl.id = 22
       ORDER BY
         mcf.car_manufacturers_manufacturer,
         mcf.car_models_model
       LIMIT 100
     `,
-      [dia, wheelName]
+      [dia, `%${wheelName}%`]
     );
 
     console.log(
@@ -491,12 +504,13 @@ async function getCarsForWheel(wheelName, diameter) {
   }
 }
 
-// === OMOLOGAZIONI per famiglia auto ===
+// Scopo: omologazioni aggregate per cerchio+diametro per una famiglia di auto.
 async function getHomologationsByCarModel(modelId) {
   try {
     const [carInfo] = await pool.query(
       `
-      SELECT man.manufacturer, cm.model FROM car_models cm
+      SELECT man.manufacturer, cm.model 
+      FROM car_models cm
       JOIN car_manufacturers man ON cm.manufacturer = man.id
       WHERE cm.id = ?
     `,
@@ -504,6 +518,9 @@ async function getHomologationsByCarModel(modelId) {
     );
 
     if (!carInfo.length) return [];
+
+    const brand = carInfo[0].manufacturer;
+    const modelName = carInfo[0].model;
 
     const [rows] = await pool.query(
       `
@@ -516,16 +533,22 @@ async function getHomologationsByCarModel(modelId) {
         MAX(appl.homologation_jwl) AS homologation_jwl,
         MAX(appl.homologation_ita) AS homologation_ita
       FROM mod_combined_full_10 mcf
-      JOIN applications appl ON mcf.applications_id = appl.id
-      JOIN am_wheels aw ON appl.am_wheel = aw.id AND aw.status = 'ACTIVE'
-      JOIN am_wheel_models awm ON aw.model = awm.id
-      JOIN am_wheel_lines awl ON awm.line = awl.id AND awl.id = 22
-      WHERE mcf.car_manufacturers_manufacturer LIKE ?
-        AND mcf.car_models_model LIKE ?
+      JOIN applications appl 
+        ON mcf.applications_id = appl.id
+      JOIN am_wheels aw 
+        ON appl.am_wheel = aw.id 
+       AND aw.status = 'ACTIVE'
+      JOIN am_wheel_models awm 
+        ON aw.model = awm.id
+      JOIN am_wheel_lines awl 
+        ON awm.line = awl.id 
+       AND awl.id = 22
+      WHERE LOWER(mcf.car_manufacturers_manufacturer) LIKE LOWER(?)
+        AND LOWER(mcf.car_models_model) LIKE LOWER(?)
       GROUP BY awm.model, aw.diameter
       ORDER BY awm.model, aw.diameter
     `,
-      [`%${carInfo[0].manufacturer}%`, `%${carInfo[0].model}%`]
+      [`%${brand}%`, `%${modelName}%`]
     );
 
     return rows;
@@ -535,7 +558,7 @@ async function getHomologationsByCarModel(modelId) {
   }
 }
 
-// === FINITURE REALI (nome leggibile) ===
+// Scopo: finiture reali (nome ufficiale) dei cerchi compatibili con una famiglia auto.
 async function getWheelFinishesForCarModel(modelId) {
   try {
     const [carInfo] = await pool.query(
@@ -560,21 +583,28 @@ async function getWheelFinishesForCarModel(modelId) {
         aw.diameter,
         GROUP_CONCAT(DISTINCT f.name ORDER BY f.name SEPARATOR ', ') AS finishes
       FROM mod_combined_full_10 mcf
-      JOIN am_wheels aw ON mcf.am_wheels_id = aw.id AND aw.status = 'ACTIVE'
-      JOIN am_wheel_models awm ON aw.model = awm.id
-      JOIN am_wheel_lines awl ON awm.line = awl.id AND awl.id = 22
-      JOIN am_wheel_versions v ON v.am_wheel = aw.id
-      JOIN finishes f ON v.finish = f.id
-      WHERE mcf.car_manufacturers_manufacturer LIKE ?
-        AND mcf.car_models_model LIKE ?
-        AND f.name IS NOT NULL AND f.name != ''
+      JOIN am_wheels aw 
+        ON mcf.am_wheels_id = aw.id 
+       AND aw.status = 'ACTIVE'
+      JOIN am_wheel_models awm 
+        ON aw.model = awm.id
+      JOIN am_wheel_lines awl 
+        ON awm.line = awl.id 
+       AND awl.id = 22
+      JOIN am_wheel_versions v 
+        ON v.am_wheel = aw.id
+      JOIN finishes f 
+        ON v.finish = f.id
+      WHERE LOWER(mcf.car_manufacturers_manufacturer) LIKE LOWER(?)
+        AND LOWER(mcf.car_models_model) LIKE LOWER(?)
+        AND f.name IS NOT NULL 
+        AND f.name != ''
       GROUP BY awm.model, aw.diameter
       ORDER BY awm.model, aw.diameter
     `,
       [`%${brand}%`, `%${modelName}%`]
     );
 
-    // Raggruppa per modello con finiture uniche
     const result = {};
     rows.forEach((r) => {
       if (!result[r.model_name]) {
@@ -600,7 +630,7 @@ async function getWheelFinishesForCarModel(modelId) {
   }
 }
 
-// === OMOLOGAZIONI REALI per modello auto (famiglia) ===
+// Scopo: omologazioni dettagliate per famiglia auto (per singolo cerchio/misura).
 async function getHomologationsForCarModel(modelId) {
   try {
     const [carInfo] = await pool.query(
@@ -633,12 +663,18 @@ async function getHomologationsForCarModel(modelId) {
         appl.plug_play,
         appl.limitation_IT
       FROM mod_combined_full_10 mcf
-      JOIN applications appl ON mcf.applications_id = appl.id
-      JOIN am_wheels aw ON appl.am_wheel = aw.id AND aw.status = 'ACTIVE'
-      JOIN am_wheel_models awm ON aw.model = awm.id
-      JOIN am_wheel_lines awl ON awm.line = awl.id AND awl.id = 22
-      WHERE mcf.car_manufacturers_manufacturer LIKE ?
-        AND mcf.car_models_model LIKE ?
+      JOIN applications appl 
+        ON mcf.applications_id = appl.id
+      JOIN am_wheels aw 
+        ON appl.am_wheel = aw.id 
+       AND aw.status = 'ACTIVE'
+      JOIN am_wheel_models awm 
+        ON aw.model = awm.id
+      JOIN am_wheel_lines awl 
+        ON awm.line = awl.id 
+       AND awl.id = 22
+      WHERE LOWER(mcf.car_manufacturers_manufacturer) LIKE LOWER(?)
+        AND LOWER(mcf.car_models_model) LIKE LOWER(?)
         AND (
           appl.homologation_tuv != '' OR
           appl.homologation_kba != '' OR
@@ -652,7 +688,6 @@ async function getHomologationsForCarModel(modelId) {
       [`%${brand}%`, `%${modelName}%`]
     );
 
-    // Formatta in modo leggibile per il GPT
     const result = rows.map((r) => {
       const omologazioni = [];
       if (r.homologation_tuv) omologazioni.push("TÜV");
@@ -663,11 +698,9 @@ async function getHomologationsForCarModel(modelId) {
 
       return {
         cerchio: r.cerchio,
-        misura: `${r.diametro}" ${r.canale}J ET${r.et}`,
+        misura: `${r.diametro}" ${r.canale}J ET${r.offset}`,
         omologazioni: omologazioni.join(" | ") || "nessuna",
-        plug_play: r.plug_play
-          ? "Plug & Play"
-          : "potrebbe richiedere modifiche",
+        plug_play: r.plug_play ? "Plug & Play" : "potrebbe richiedere modifiche",
         limitazioni: r.limitation_IT || "nessuna",
       };
     });
