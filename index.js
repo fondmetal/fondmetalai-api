@@ -350,26 +350,30 @@ async function getFitmentData(brand, model, wheelModelName, diameter) {
         appl.homologation_jwl,
         appl.homologation_ita
       FROM mod_combined_full_10 mcf
-      JOIN applications appl ON mcf.applications_id = appl.id
-      JOIN am_wheels aw ON appl.am_wheel = aw.id 
-        AND aw.status = 'ACTIVE' 
-        AND aw.diameter = ?
-      JOIN am_wheel_models awm ON aw.model = awm.id 
-        AND awm.model = ?
-      JOIN am_wheel_lines awl ON awm.line = awl.id 
-        AND awl.id = 22  -- Fondmetal ufficiale
-      WHERE mcf.car_manufacturers_manufacturer LIKE ?
-        AND mcf.car_models_model LIKE ?
+      JOIN applications appl 
+        ON mcf.applications_id = appl.id
+      JOIN am_wheels aw 
+        ON appl.am_wheel = aw.id 
+       AND aw.status = 'ACTIVE'
+       AND aw.diameter = CAST(? AS UNSIGNED)
+      JOIN am_wheel_models awm 
+        ON aw.model = awm.id
+       AND awm.model LIKE ?
+      JOIN am_wheel_lines awl 
+        ON awm.line = awl.id
+       AND awl.id = 22
+      WHERE LOWER(mcf.car_manufacturers_manufacturer) LIKE LOWER(?)
+        AND LOWER(mcf.car_models_model) LIKE LOWER(?)
       LIMIT 1
-    `,
-      [dia, wheelModelName, `%${brand}%`, `%${model}%`]
+      `,
+      [
+        dia,
+        `%${wheelModelName}%`,
+        `%${brand}%`,
+        `%${model}%`,
+      ]
     );
 
-    console.log(
-      `[OK] Fitment preciso per ${brand} ${model} + ${wheelModelName} ${dia}" → ${
-        rows.length ? "TROVATO" : "non trovato"
-      }`
-    );
     return rows.length ? rows[0] : null;
   } catch (err) {
     console.warn("Errore getFitmentData:", err.message);
