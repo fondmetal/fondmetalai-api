@@ -1570,6 +1570,107 @@ app.post("/fitment", async (req, res) => {
   }
 });
 
+// FILTRO PAGINA CERCHI
+app.get("/api/marche", async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT DISTINCT manufacturer 
+      FROM car_manufacturers 
+      ORDER BY manufacturer
+    `);
+    res.json(rows.map(r => r.manufacturer));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/modelli", async (req, res) => {
+  const { marca } = req.query;
+  if (!marca) return res.status(400).json({ error: "Missing marca" });
+
+  try {
+    const [rows] = await pool.query(`
+      SELECT DISTINCT cmo.model
+      FROM car_models cmo
+      JOIN car_manufacturers cm ON cmo.manufacturer = cm.id
+      WHERE cm.manufacturer = ?
+      ORDER BY cmo.model
+    `, [marca]);
+
+    res.json(rows.map(r => r.model));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/anni", async (req, res) => {
+  const { marca, modello } = req.query;
+  if (!marca || !modello) return res.status(400).json({ error: "Missing parameters" });
+
+  try {
+    const [rows] = await pool.query(`
+      SELECT DISTINCT 
+        LEFT(c.production_time_start, 4) AS year_start,
+        LEFT(c.production_time_stop, 4) AS year_stop
+      FROM cars c
+      JOIN car_models cmo ON c.car_model = cmo.id
+      JOIN car_manufacturers cm ON cmo.manufacturer = cm.id
+      WHERE cm.manufacturer = ? AND cmo.model = ?
+    `, [marca, modello]);
+
+    const anni = new Set();
+
+    rows.forEach(r => {
+      const start = parseInt(r.year_start);
+      const stop = r.year_stop ? parseInt(r.year_stop) : new Date().getFullYear();
+      for (let y = start; y <= stop; y++) anni.add(y);
+    });
+
+    res.json([...anni].sort());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/cerchi", async (req, res) => {
+  const { marca, modello, anno } = req.query;
+  if (!marca || !modello || !anno) {
+    return res.status(400).json({ error: "Missing parameters" });
+  }
+
+  const sql = `
+SELECT DISTINCT
+    awm.model AS wheel_model_name,
+    aw.diameter AS wheel_diameter
+FROM car_manufacturers cm
+JOIN car_models cmo ON cmo.manufacturer = cm.id
+JOIN cars c ON c.car_model = cmo.id
+JOIN applications a ON a.car = c.id
+JOIN am_wheels aw ON aw.id = a.am_wheel
+JOIN am_wheel_models awm ON awm.id = aw.model
+JOIN am_wheel_lines awl ON awm.line = awl.id
+WHERE cm.manufacturer = ?
+  AND cmo.model = ?
+  AND ? BETWEEN CAST(LEFT(c.production_time_start, 4) AS UNSIGNED)
+           AND CAST(
+                 CASE
+                   WHEN c.production_time_stop = '' THEN DATE_FORMAT(CURDATE(), '%Y')
+                   ELSE LEFT(c.production_time_stop, 4)
+                 END AS UNSIGNED
+               )
+  AND awm.line = 22
+  AND aw.status = 'ACTIVE'
+ORDER BY awm.model, aw.diameter
+  `;
+
+  try {
+    const [rows] = await pool.query(sql, [marca, modello, anno]);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Avvio server
 app.listen(port, () => {
   console.log(`FondmetalAI API in ascolto su http://localhost:${port}`);
