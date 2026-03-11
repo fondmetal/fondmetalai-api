@@ -278,6 +278,94 @@ Esempio:
 // =========================
 // FUNZIONI DB DI SUPPORTO
 // =========================
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function cleanTextValue(value) {
+  return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+}
+
+function extractCommercialWheelName(rawName) {
+  const raw = cleanTextValue(rawName);
+  if (!raw) return "";
+  const match = raw.match(/^(.*?)\s*\(/);
+  return match?.[1] ? cleanTextValue(match[1]) : raw;
+}
+
+function wheelNameMatches(a, b) {
+  const left = normalizeText(extractCommercialWheelName(a));
+  const right = normalizeText(extractCommercialWheelName(b));
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const leftCompact = left.replace(/\s+/g, "");
+  const rightCompact = right.replace(/\s+/g, "");
+  return leftCompact === rightCompact || left.includes(right) || right.includes(left);
+}
+
+function detectRequestedHomologationType(message) {
+  const value = normalizeText(message);
+  if (!value) return null;
+  if (/(^|[^a-z0-9])nad([^a-z0-9]|$)|(^|[^a-z0-9])ita([^a-z0-9]|$)/.test(value)) return "NAD/ITA";
+  if (/(^|[^a-z0-9])ece([^a-z0-9]|$)/.test(value)) return "ECE";
+  if (/(^|[^a-z0-9])kba([^a-z0-9]|$)/.test(value)) return "KBA";
+  if (/(^|[^a-z0-9])tuv([^a-z0-9]|$)|(^|[^a-z0-9])tuev([^a-z0-9]|$)/.test(value)) return "TUV";
+  if (/(^|[^a-z0-9])jwl([^a-z0-9]|$)/.test(value)) return "JWL";
+  return null;
+}
+
+function extractHomologationsFromApplicationRow(row) {
+  if (!row) return [];
+  const homologations = [];
+  if (cleanTextValue(row.homologation_tuv)) homologations.push({ type: "TUV", code: cleanTextValue(row.homologation_tuv) });
+  if (cleanTextValue(row.homologation_kba)) homologations.push({ type: "KBA", code: cleanTextValue(row.homologation_kba) });
+  if (cleanTextValue(row.homologation_ece)) homologations.push({ type: "ECE", code: cleanTextValue(row.homologation_ece) });
+  if (cleanTextValue(row.homologation_jwl)) homologations.push({ type: "JWL", code: cleanTextValue(row.homologation_jwl) });
+  if (cleanTextValue(row.homologation_ita)) homologations.push({ type: "NAD/ITA", code: cleanTextValue(row.homologation_ita) });
+  return homologations;
+}
+
+function formatHomologationLine(homologations) {
+  if (!Array.isArray(homologations) || !homologations.length) {
+    return "Nessuna omologazione risulta attiva su questa combinazione.";
+  }
+
+  return homologations
+    .map((item) => (item.code ? `${item.type}: ${item.code}` : item.type))
+    .join(" | ");
+}
+
+function buildExactFitmentReply({ brand, model, year, wheel, diameter, requestedHomologationType, preciseFitment, homologations }) {
+  const carLabel = `${brand} ${model} ${year || ""}`.replace(/\s+/g, " ").trim();
+  const wheelLabel = `${wheel} ${diameter}"`;
+
+  if (!preciseFitment) {
+    return `Il cerchio **${wheelLabel}** NON risulta compatibile con **${carLabel}** secondo i dati ufficiali Fondmetal.`;
+  }
+
+  if (requestedHomologationType) {
+    const found = homologations.find((item) => item.type === requestedHomologationType);
+    if (found) {
+      return `Il cerchio **${wheelLabel}** risulta compatibile per **${carLabel}**.
+
+Omologazione **${requestedHomologationType}**: **sì**${found.code ? ` (${found.code})` : ""}.`;
+    }
+    return `Il cerchio **${wheelLabel}** risulta compatibile per **${carLabel}**.
+
+Omologazione **${requestedHomologationType}**: **no**.`;
+  }
+
+  if (homologations.length) {
+    return `Il cerchio **${wheelLabel}** risulta compatibile per **${carLabel}**.
+
+Omologazioni disponibili: **${formatHomologationLine(homologations)}**.`;
+  }
+
+  return `Il cerchio **${wheelLabel}** risulta compatibile per **${carLabel}**.
+
+Per questa combinazione non risultano omologazioni attive nei dati ufficiali Fondmetal.`;
+}
+
 async function findManufacturerId(name) {
   const [rows] = await pool.query(
     "SELECT id FROM car_manufacturers WHERE LOWER(manufacturer) LIKE LOWER(?) LIMIT 1",
@@ -327,54 +415,83 @@ async function findWheelVersionId(wheelModelId, diameter) {
   return rows.length ? rows[0] : null;
 }
 
-// === FIXATA E DINAMICA ===
-async function getFitmentData(brand, model, wheelModelName, diameter) {
+// Fitment preciso: auto + anno + cerchio + diametro.
+async function getFitmentData(brand, model, year, wheelModelName, diameter) {
   const dia =
     typeof diameter === "string"
       ? parseInt(String(diameter).replace(/\D+/g, ""), 10)
       : Number(diameter);
+  const yearValue =
+    typeof year === "string"
+      ? parseInt(String(year).replace(/\D+/g, ""), 10)
+      : Number(year);
 
-  if (!dia || Number.isNaN(dia) || !brand || !model || !wheelModelName)
+  if (!dia || Number.isNaN(dia) || !brand || !model || !wheelModelName || !yearValue || Number.isNaN(yearValue)) {
     return null;
+  }
 
   try {
     const [rows] = await pool.query(
       `
-      SELECT 
+      SELECT
+        cm.manufacturer AS car_brand_name,
+        cmo.model AS car_model_name,
+        c.production_time_start,
+        c.production_time_stop,
+        awm.model AS wheel_model_name,
+        aw.diameter AS wheel_diameter,
+        aw.width AS wheel_width,
+        aw.et AS wheel_et,
         appl.plug_play,
         appl.fitment_type,
+        appl.fitment_advice,
+        appl.limitation,
         appl.limitation_IT,
         appl.homologation_tuv,
         appl.homologation_kba,
         appl.homologation_ece,
         appl.homologation_jwl,
         appl.homologation_ita
-      FROM mod_combined_full_10 mcf
-      JOIN applications appl 
-        ON mcf.applications_id = appl.id
-      JOIN am_wheels aw 
-        ON appl.am_wheel = aw.id 
+      FROM applications appl
+      JOIN cars c
+        ON c.id = appl.car
+      JOIN car_models cmo
+        ON cmo.id = c.car_model
+      JOIN car_manufacturers cm
+        ON cm.id = cmo.manufacturer
+      JOIN am_wheels aw
+        ON aw.id = appl.am_wheel
        AND aw.status = 'ACTIVE'
        AND aw.diameter = CAST(? AS UNSIGNED)
-      JOIN am_wheel_models awm 
-        ON aw.model = awm.id
-       AND awm.model LIKE ?
-      JOIN am_wheel_lines awl 
+      JOIN am_wheel_models awm
+        ON awm.id = aw.model
+      JOIN am_wheel_lines awl
         ON awm.line = awl.id
        AND awl.id = 22
-      WHERE LOWER(mcf.car_manufacturers_manufacturer) LIKE LOWER(?)
-        AND LOWER(mcf.car_models_model) LIKE LOWER(?)
-      LIMIT 1
+      WHERE LOWER(cm.manufacturer) LIKE LOWER(?)
+        AND LOWER(cmo.model) LIKE LOWER(?)
+        AND LOWER(awm.model) LIKE LOWER(?)
+        AND CAST(? AS UNSIGNED) BETWEEN CAST(LEFT(c.production_time_start, 4) AS UNSIGNED)
+            AND CAST(CASE
+              WHEN c.production_time_stop = '' OR c.production_time_stop IS NULL THEN DATE_FORMAT(CURDATE(), '%Y')
+              ELSE LEFT(c.production_time_stop, 4)
+            END AS UNSIGNED)
+      ORDER BY c.production_time_start, c.production_time_stop, aw.width, aw.et
+      LIMIT 10
       `,
       [
         dia,
-        `%${wheelModelName}%`,
         `%${brand}%`,
         `%${model}%`,
+        `%${wheelModelName}%`,
+        yearValue,
       ]
     );
 
-    return rows.length ? rows[0] : null;
+    if (!rows.length) return null;
+
+    const exactRow = rows.find((row) => wheelNameMatches(row.wheel_model_name, wheelModelName)) || rows[0];
+    return exactRow || null;
   } catch (err) {
     console.warn("Errore getFitmentData:", err.message);
     return null;
@@ -887,14 +1004,7 @@ app.post("/chat", async (req, res) => {
       ].slice(-20);
       chatHistory.set(userId, updatedHistory);
 
-      return res.json({
-        reply,
-        debug: {
-          intent: rawIntent,
-          context: ctxUpdated,
-          durationMs: Date.now() - startTime,
-        },
-      });
+      return res.json({ reply });
     }
 
     // Mancano dati essenziali sul cerchio
@@ -910,14 +1020,7 @@ app.post("/chat", async (req, res) => {
       ].slice(-20);
       chatHistory.set(userId, updatedHistory);
 
-      return res.json({
-        reply,
-        debug: {
-          intent: rawIntent,
-          context: ctxUpdated,
-          durationMs: Date.now() - startTime,
-        },
-      });
+      return res.json({ reply });
     }
 
     if (rawIntent === "fitment_by_wheel" && wheelModelName && !wheelDiameter) {
@@ -932,14 +1035,7 @@ app.post("/chat", async (req, res) => {
       ].slice(-20);
       chatHistory.set(userId, updatedHistory);
 
-      return res.json({
-        reply,
-        debug: {
-          intent: rawIntent,
-          context: ctxUpdated,
-          durationMs: Date.now() - startTime,
-        },
-      });
+      return res.json({ reply });
     }
 
     // =========================
@@ -984,6 +1080,7 @@ app.post("/chat", async (req, res) => {
         const row = await getFitmentData(
           carBrand,
           carModel,
+          carYear,
           wheelModelName,
           wheelDiameter
         );
@@ -1011,6 +1108,37 @@ app.post("/chat", async (req, res) => {
       } catch (err) {
         log("Errore getFitmentData:", err);
       }
+    }
+
+    const requestedHomologationType = detectRequestedHomologationType(userMessage);
+
+    if (
+      (rawIntent === "omologation_by_car" || rawIntent === "fitment_by_car") &&
+      carBrand &&
+      carModel &&
+      carYear &&
+      wheelModelName &&
+      wheelDiameter
+    ) {
+      const deterministicReply = buildExactFitmentReply({
+        brand: carBrand,
+        model: carModel,
+        year: carYear,
+        wheel: extractCommercialWheelName(wheelModelName),
+        diameter: wheelDiameter,
+        requestedHomologationType,
+        preciseFitment,
+        homologations: preciseFitmentHomologations,
+      });
+
+      const updatedHistory = [
+        ...history,
+        { role: "user", content: userMessage },
+        { role: "assistant", content: deterministicReply },
+      ].slice(-20);
+      chatHistory.set(userId, updatedHistory);
+
+      return res.json({ reply: deterministicReply });
     }
 
     // --- Info cerchio (senza auto) ---
@@ -1232,14 +1360,7 @@ app.post("/chat", async (req, res) => {
     ].slice(-20);
     chatHistory.set(userId, updatedHistory);
 
-    res.json({
-      reply,
-      debug: {
-        intent: rawIntent,
-        context: ctxUpdated,
-        durationMs: Date.now() - startTime,
-      },
-    });
+    res.json({ reply });
 
     log(`FINE RICHIESTA (${Date.now() - startTime}ms)`);
   } catch (error) {
