@@ -1,22 +1,23 @@
-// db.js
 import mysql from "mysql2/promise";
+import { config, getMissingDbConfig } from "./src/config.js";
 
-const required = ["DB_HOST", "DB_USER", "DB_PASS", "DB_NAME"];
-for (const k of required) {
-  if (!process.env[k]) {
-    console.warn(`[DB] Variabile mancante: ${k}`);
-  }
+const missing = getMissingDbConfig();
+
+if (missing.length) {
+  throw new Error(
+    `Configurazione database incompleta. Variabili mancanti: ${missing.join(", ")}`
+  );
 }
 
 const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASS,
-  database: process.env.DB_NAME,
+  host: config.db.host,
+  user: config.db.user,
+  password: config.db.password,
+  database: config.db.name,
   waitForConnections: true,
-  connectionLimit: 10,
+  connectionLimit: config.db.connectionLimit,
   queueLimit: 0,
-  // charset: "utf8mb4_general_ci", // decommenta se necessario
+  connectTimeout: config.db.connectTimeoutMs,
 });
 
 export default pool;
