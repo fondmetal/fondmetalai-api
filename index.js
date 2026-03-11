@@ -314,6 +314,27 @@ function detectRequestedHomologationType(message) {
   return null;
 }
 
+function detectRequestedSpecFields(message) {
+  const value = normalizeText(message);
+  return {
+    asksEt: /(^|[^a-z0-9])et([^a-z0-9]|$)|offset/.test(value),
+    asksPcd: /(^|[^a-z0-9])pcd([^a-z0-9]|$)|interasse|foratura|fori/.test(value),
+    asksWidth: /canale|larghezza|width/.test(value),
+    asksDiameter: /diametro|diametri|misura|misure|pollic/.test(value),
+  };
+}
+
+function isExactFitmentFollowupIntent(message, rawIntent) {
+  if (["fitment_by_car", "omologation_by_car"].includes(rawIntent)) {
+    return true;
+  }
+
+  const value = normalizeText(message);
+  if (!value) return false;
+
+  return /posso montarl|compatibil|omolog|quindi|va bene|va ben|et|pcd|offset|foratura|specifiche/.test(value);
+}
+
 function extractHomologationsFromApplicationRow(row) {
   if (!row) return [];
   const homologations = [];
@@ -335,7 +356,7 @@ function formatHomologationLine(homologations) {
     .join(" | ");
 }
 
-function buildExactFitmentReply({ brand, model, year, wheel, diameter, requestedHomologationType, preciseFitment, homologations }) {
+function buildExactFitmentReply({ brand, model, year, wheel, diameter, requestedHomologationType, preciseFitment, homologations, requestedSpecs }) {
   const carLabel = `${brand} ${model} ${year || ""}`.replace(/\s+/g, " ").trim();
   const wheelLabel = `${wheel} ${diameter}"`;
 
@@ -343,27 +364,55 @@ function buildExactFitmentReply({ brand, model, year, wheel, diameter, requested
     return `Il cerchio **${wheelLabel}** NON risulta compatibile con **${carLabel}** secondo i dati ufficiali Fondmetal.`;
   }
 
+  const specLines = [];
+  const wantsSpecs = requestedSpecs && Object.values(requestedSpecs).some(Boolean);
+  if (wantsSpecs) {
+    if (requestedSpecs.asksDiameter) {
+      specLines.push(`Diametro: **${preciseFitment.wheel_diameter || diameter}"**`);
+    }
+    if (requestedSpecs.asksWidth && cleanTextValue(preciseFitment.wheel_width)) {
+      specLines.push(`Canale: **${preciseFitment.wheel_width}**`);
+    }
+    if (requestedSpecs.asksEt && cleanTextValue(preciseFitment.wheel_et)) {
+      specLines.push(`ET: **${preciseFitment.wheel_et}**`);
+    }
+    if (requestedSpecs.asksPcd && cleanTextValue(preciseFitment.pcd_label)) {
+      specLines.push(`PCD: **${preciseFitment.pcd_label}**`);
+    }
+  }
+
   if (requestedHomologationType) {
     const found = homologations.find((item) => item.type === requestedHomologationType);
-    if (found) {
-      return `Il cerchio **${wheelLabel}** risulta compatibile per **${carLabel}**.
+    const base = found
+      ? `Il cerchio **${wheelLabel}** risulta compatibile per **${carLabel}**.
 
-Omologazione **${requestedHomologationType}**: **sì**${found.code ? ` (${found.code})` : ""}.`;
-    }
-    return `Il cerchio **${wheelLabel}** risulta compatibile per **${carLabel}**.
+Omologazione **${requestedHomologationType}**: **sì**${found.code ? ` (${found.code})` : ""}.`
+      : `Il cerchio **${wheelLabel}** risulta compatibile per **${carLabel}**.
 
 Omologazione **${requestedHomologationType}**: **no**.`;
+    return specLines.length ? `${base}
+
+Specifiche confermate:
+- ${specLines.join("\n- ")}` : base;
   }
 
   if (homologations.length) {
-    return `Il cerchio **${wheelLabel}** risulta compatibile per **${carLabel}**.
+    const base = `Il cerchio **${wheelLabel}** risulta compatibile per **${carLabel}**.
 
 Omologazioni disponibili: **${formatHomologationLine(homologations)}**.`;
+    return specLines.length ? `${base}
+
+Specifiche confermate:
+- ${specLines.join("\n- ")}` : base;
   }
 
-  return `Il cerchio **${wheelLabel}** risulta compatibile per **${carLabel}**.
+  const base = `Il cerchio **${wheelLabel}** risulta compatibile per **${carLabel}**.
 
 Per questa combinazione non risultano omologazioni attive nei dati ufficiali Fondmetal.`;
+  return specLines.length ? `${base}
+
+Specifiche confermate:
+- ${specLines.join("\n- ")}` : base;
 }
 
 async function findManufacturerId(name) {
@@ -442,6 +491,7 @@ async function getFitmentData(brand, model, year, wheelModelName, diameter) {
         aw.diameter AS wheel_diameter,
         aw.width AS wheel_width,
         aw.et AS wheel_et,
+        p.pcd AS pcd_label,
         appl.plug_play,
         appl.fitment_type,
         appl.fitment_advice,
@@ -465,6 +515,8 @@ async function getFitmentData(brand, model, year, wheelModelName, diameter) {
        AND aw.diameter = CAST(? AS UNSIGNED)
       JOIN am_wheel_models awm
         ON awm.id = aw.model
+      LEFT JOIN pcds p
+        ON p.id = aw.pcd
       JOIN am_wheel_lines awl
         ON awm.line = awl.id
        AND awl.id = 22
@@ -1087,18 +1139,7 @@ app.post("/chat", async (req, res) => {
         preciseFitment = row || null;
 
         if (row) {
-          const homo = [];
-          if (row.homologation_tuv)
-            homo.push({ type: "TÜV", code: row.homologation_tuv });
-          if (row.homologation_kba)
-            homo.push({ type: "KBA", code: row.homologation_kba });
-          if (row.homologation_ece)
-            homo.push({ type: "ECE", code: row.homologation_ece });
-          if (row.homologation_jwl)
-            homo.push({ type: "JWL", code: row.homologation_jwl });
-          if (row.homologation_ita)
-            homo.push({ type: "NAD/ITA", code: row.homologation_ita });
-          preciseFitmentHomologations = homo;
+          preciseFitmentHomologations = extractHomologationsFromApplicationRow(row);
         }
 
         log(
@@ -1111,9 +1152,10 @@ app.post("/chat", async (req, res) => {
     }
 
     const requestedHomologationType = detectRequestedHomologationType(userMessage);
+    const requestedSpecs = detectRequestedSpecFields(userMessage);
 
     if (
-      (rawIntent === "omologation_by_car" || rawIntent === "fitment_by_car") &&
+      isExactFitmentFollowupIntent(userMessage, rawIntent) &&
       carBrand &&
       carModel &&
       carYear &&
@@ -1129,6 +1171,7 @@ app.post("/chat", async (req, res) => {
         requestedHomologationType,
         preciseFitment,
         homologations: preciseFitmentHomologations,
+        requestedSpecs,
       });
 
       const updatedHistory = [
